@@ -31,6 +31,7 @@ promote: ## Copy current/ engine files to best/
 	@echo "Copied current -> best. Run 'make rebuild' to compile."
 
 clean: ## Remove build artifacts
-	rm -rf current/build best/build __pycache__ current/*.egg-info best/*.egg-info positions/
-	find . -name '*.so' -delete
-	find . -name '*.pyd' -delete
+	@for d in current best; do \
+		rm -rf "$$d"/build "$$d"/*.so "$$d"/*.pyd "$$d"/*.egg-info; \
+	done
+	rm -rf __pycache__ positions/
