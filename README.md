@@ -26,7 +26,8 @@ SealBot/
 ├── current/       # The bot you're working on — edit these files
 ├── best/          # The baseline bot to beat
 ├── game.py        # Game rules (don't modify)
-├── evaluate.py    # Run current vs best
+├── evaluate.py    # Run current vs best (definitive quality test)
+├── benchmark.py  # Fixed-depth speed benchmark
 ├── play.py        # Play against the bot interactively
 ├── build.sh       # Clean + rebuild both bots
 └── Makefile
@@ -59,7 +60,19 @@ The iteration loop:
    ```
 4. Repeat.
 
-`evaluate.py` reports win rates, Elo differences, confidence intervals, and p-values so you can tell real improvements from noise. A p-value under 0.05 is a good signal; 100+ games at longer time controls gives more reliable results.
+`evaluate.py` is the definitive test for whether a change is an improvement — it plays real games and measures win rate. A p-value under 0.05 is a good signal; 100+ games at longer time controls gives more reliable results.
+
+### Speed-only benchmarking
+
+For pure speed optimizations (no quality tradeoff), use `benchmark.py` instead. It runs both bots on the same random positions at a fixed search depth and compares execution time, node counts, and move agreement:
+
+```bash
+python benchmark.py                # 10 positions, depth 4
+python benchmark.py -n 20 -d 6     # 20 positions, depth 6
+python benchmark.py --seed 123     # custom seed for reproducibility
+```
+
+If move agreement is 100% and current is faster, you know the optimization is safe to promote without running full games.
 
 ### Other evaluation modes
 
