@@ -334,6 +334,7 @@ public:
         if (_cur_player != _player) {
             _tt.clear();
             _history.clear();
+            std::memset(_killers, 0, sizeof(_killers));
         }
         _player    = _cur_player;
         _nodes     = 0;
@@ -691,6 +692,17 @@ private:
     // ── Transposition table & history (hash maps) ──
     flat_map<uint64_t, TTEntry> _tt;
     flat_map<Coord, int>        _history;
+
+    // ── Killer moves (2 slots per ply) ──
+    static constexpr int MAX_KILLERS_PLY = 64;
+    Turn _killers[MAX_KILLERS_PLY][2] = {};
+
+    void _store_killer(int ply, const Turn& t) {
+        if (ply >= MAX_KILLERS_PLY) return;
+        if (t == _killers[ply][0]) return;
+        _killers[ply][1] = _killers[ply][0];
+        _killers[ply][0] = t;
+    }
 
     // ── RNG ──
     std::mt19937 _rng;
@@ -1272,7 +1284,11 @@ private:
 
         if (depth == 0) {
             double sc = _quiescence(alpha, beta, MAX_QDEPTH);
-            _tt[ttk] = {0, _tt_store(sc), TT_EXACT, {}, false};
+            int8_t qflag;
+            if (sc <= alpha) qflag = TT_UPPER;
+            else if (sc >= beta) qflag = TT_LOWER;
+            else qflag = TT_EXACT;
+            _tt[ttk] = {0, _tt_store(sc), qflag, {}, false};
             return sc;
         }
 
@@ -1357,13 +1373,12 @@ private:
                 bool is_a = (_cur_player == P_A);
                 double dsign = maximizing ? DELTA_WEIGHT : -DELTA_WEIGHT;
 
+                // Score by delta only — keeps candidate selection
+                // deterministic and independent of history heuristic.
                 std::vector<std::pair<double, Coord>> scored;
                 scored.reserve(cands.size());
                 for (Coord c : cands) {
-                    double h = 0;
-                    auto hi = _history.find(c);
-                    if (hi != _history.end()) h = static_cast<double>(hi->second);
-                    scored.push_back({h + _move_delta(pack_q(c), pack_r(c), is_a) * dsign, c});
+                    scored.push_back({_move_delta(pack_q(c), pack_r(c), is_a) * dsign, c});
                 }
                 std::sort(scored.begin(), scored.end(),
                     [](const auto& a, const auto& b) {
@@ -1405,6 +1420,22 @@ private:
                 if (turns[i] == tt_move) { std::swap(turns[0], turns[i]); break; }
         }
 
+        // Killer move ordering (after TT move)
+        if (_ply < MAX_KILLERS_PLY) {
+            size_t next = has_tt_move ? 1 : 0;
+            for (int ki = 0; ki < 2; ki++) {
+                const Turn& killer = _killers[_ply][ki];
+                if (killer.first == 0 && killer.second == 0) continue;
+                if (has_tt_move && killer == tt_move) continue;
+                for (size_t i = next; i < turns.size(); i++)
+                    if (turns[i] == killer) {
+                        std::swap(turns[next], turns[i]);
+                        next++;
+                        break;
+                    }
+            }
+        }
+
         Turn best_move{};
         double value;
 
@@ -1424,6 +1455,7 @@ private:
                 if (alpha >= beta) {
                     _history[turn.first]  += depth * depth;
                     _history[turn.second] += depth * depth;
+                    _store_killer(_ply, turn);
                     break;
                 }
             }
@@ -1443,6 +1475,7 @@ private:
                 if (alpha >= beta) {
                     _history[turn.first]  += depth * depth;
                     _history[turn.second] += depth * depth;
+                    _store_killer(_ply, turn);
                     break;
                 }
             }
