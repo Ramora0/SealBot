@@ -313,7 +313,10 @@ private:
             s += NET_W1[j][NET_K] * g0 + NET_W1[j][NET_K + 1] * g1;
             if (s > 0.f) out += NET_W2[j] * s;
         }
-        return static_cast<double>(out) * NET_OUT_SCALE;
+        // Hybrid: net (global judgment) + scaled linear window sum
+        // (local gradient; already incrementally maintained for ordering).
+        return static_cast<double>(out) * NET_OUT_SCALE
+               + NET_LIN_BLEND * _eval_score;
     }
 
     // ── Method declarations (implemented in board.h, movegen.h, search.h) ──

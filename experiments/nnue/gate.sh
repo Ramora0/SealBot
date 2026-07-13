@@ -4,11 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=../..
-CKPT=${1:?usage: gate.sh <ckpt> [n] [tl]}
+CKPT=${1:?usage: gate.sh <ckpt> [n] [tl] [lin_blend]}
 N=${2:-100}
 TL=${3:-0.1}
+LIN=${4:-0.0}
 
-$ROOT/.venv/bin/python emit_net.py --ckpt "$CKPT"
+$ROOT/.venv/bin/python emit_net.py --ckpt "$CKPT" --lin-blend "$LIN"
 # setuptools does not track header deps -- force full rebuild
 (cd $ROOT/current && rm -rf build *.so *.egg-info \
     && ../.venv/bin/python setup.py build_ext --inplace >/dev/null 2>&1)

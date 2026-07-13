@@ -40,7 +40,8 @@ def fmt_1d(name, arr):
             "{" + ",".join(flit(v) for v in arr) + "};\n")
 
 
-def emit(ew, ec, w1, b1, w2, b2, out_path, out_scale=OUT_SCALE, clip=CLIP):
+def emit(ew, ec, w1, b1, w2, b2, out_path, out_scale=OUT_SCALE, clip=CLIP,
+         lin_blend=0.0):
     assert ew.shape == (729, K) and ec.shape == (NUM_CLASSES, K)
     assert w1.shape == (H, K + G) and b1.shape == (H,) and w2.shape == (H,)
     with open(out_path, "w") as f:
@@ -50,6 +51,7 @@ def emit(ew, ec, w1, b1, w2, b2, out_path, out_scale=OUT_SCALE, clip=CLIP):
         f.write(f"static constexpr int NET_G = {G};\n")
         f.write(f"static const float NET_OUT_SCALE = {flit(out_scale)};\n")
         f.write(f"static const float NET_CLIP = {flit(clip)};\n")
+        f.write(f"static const float NET_LIN_BLEND = {flit(lin_blend)};\n")
         f.write(f"static const float NET_B2 = {flit(float(b2))};\n\n")
         f.write(fmt_2d("NET_EW", ew))
         f.write(fmt_2d("NET_EC", ec))
@@ -66,6 +68,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--ckpt", type=str, default=None)
+    ap.add_argument("--lin-blend", type=float, default=0.0,
+                    help="engine adds lin_blend * old linear eval to net out")
     ap.add_argument("--out", type=str,
                     default=os.path.join(CURRENT_DIR, "net_data.h"))
     args = ap.parse_args()
@@ -89,7 +93,8 @@ def main():
              float(sd["w2.bias"].numpy().reshape(-1)[0]),
              args.out,
              out_scale=float(sd.get("out_scale", OUT_SCALE)),
-             clip=float(sd.get("clip", CLIP)))
+             clip=float(sd.get("clip", CLIP)),
+             lin_blend=args.lin_blend)
 
 
 if __name__ == "__main__":
