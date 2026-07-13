@@ -34,9 +34,17 @@ metric — the engine supplies tactics; long-horizon value quality wins games.
 POLICY-ROOT breakthrough (later same day): strix policy distilled into
 PW[729]+PC[8548] ordering tables (listwise KL over D2 candidates). Used at the
 ROOT ONLY = +402 Elo over the distill leader (91%, n=300); used at interior
-nodes = −512. Lesson: oracle policy chooses moves; interior alpha-beta ordering
-must stay consistent with the engine's own eval (linear delta). Engine knobs:
-SEAL_POLICY_MODE (2=root-only default), SEAL_CAND_CAP/ROOT_CAP/DELTA_KEEP.
+nodes = −512. ROOT-CAUSED (not a bug; mirror identities verified exact):
+minimax pruning asymmetry — dropping OUR alternatives is suboptimal, dropping
+the OPPONENT'S refutations is unsound optimism that compounds per min-node.
+Side-split bisect: our-side interior +67(ns), opponent-side −512, combos
+interfere (+83), min-node union widening loses to breadth (+16). Delta stays
+in-tree as the refutation guard (forcing replies always have huge window
+deltas = ~100% refutation recall) until the value net can score policy-shaped
+replies. Engine knobs: SEAL_POLICY_MODE (2=root-only default, bits:
+1=our-interior 2=root 4=threat 8=opp-interior 16=min-union),
+SEAL_CAND_CAP/ROOT_CAP/DELTA_KEEP. Equal-time vs strix: policy-root 11/150
+(7.3%) vs distill 3/150, champion 2/150, original 0/150.
 Diagnosis that led there: 23% of strix's moves fell below the interior cap
 under old ordering; value fidelity collapses off-distribution (0.86→0.68).
 Basis battery: cellnl (per-cell elementwise NL over summed raw 3^11 line

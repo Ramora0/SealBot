@@ -167,3 +167,30 @@ the positions strix-like replies create (fidelity 0.68 off-distribution) —
 prerequisite: cellnl + DAgger value net; then revisit.
 
 Ship config: SEAL_POLICY_MODE=2 (default), snapshotted policyroot_frozen/.
+
+## -512 mechanism CORRECTED (user skepticism vindicated)
+
+The "5% recall miss -> -512" story was wrong. Direct measurement (fresh
+strix oracle on perturbed tree-interior-like positions): the policy tables
+do NOT collapse off-distribution (top-15 recall 91.8% perturbed vs 87.4%
+real) and contain 100.0% of forced-block cells. Recall was never the issue.
+
+The real mechanism: interior pair generation only emits index pairs with
+i+j <= PAIR_SUM_CAP(14) — 56 of 105 pairs, a wedge over the ordering.
+Refutations must sit at index ~0 or their PAIRS NEVER EXIST (two blocks at
+indices 6+9 = sum 15: the double-block defense is unrepresentable). The
+delta orderer accidentally satisfied this (forcing moves = huge deltas =
+index 0); the policy ranks blocks top-15 but mid-wedge -> defensive pairs
+vanish -> unsound optimism -> -512.
+
+Evidence: threat-first partition (must-block cells stable-partitioned to
+the front) recovers -512 -> -104; fully opening the wedge (SUM_CAP 28)
+takes policy-interior to -53 (~neutral) but costs the default config ~200
+Elo of breadth (root-only drops +323 -> +151). The narrow wedge + delta is
+a co-designed fast verifier; policy adds nothing inside it yet.
+
+FINAL: mode 2 (policy root, delta tree, wedge 14) = +308..+402 over
+distill_frozen across 4 independent gates. Threat-first partition kept in
+_select_candidates for any future interior-policy use.
+Also: runtime caps > 15 are silently ignored at interior nodes
+(g_inner_pairs is compile-time) — earlier interior-cap sweep entries void.

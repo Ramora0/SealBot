@@ -328,6 +328,27 @@ private:
         cands.clear();
         for (int i = 0; i < keep; i++)
             cands.push_back(scored[i].second);
+        // bit 5: policy REORDERS the delta-selected survivors (coverage
+        // from delta, cutoff ordering from the net).
+        if (!use_policy && (policy_mode & 32)) {
+            std::sort(cands.begin(), cands.end(), [&](Coord a, Coord b) {
+                double pa = _policy_score(pack_q(a), pack_r(a), maximizing);
+                double pb = _policy_score(pack_q(b), pack_r(b), maximizing);
+                if (pa != pb) return pa > pb;
+                return a < b;
+            });
+        }
+        // Threat-first partition: interior pair generation only emits pairs
+        // with index-sum <= PAIR_SUM_CAP, so refutations must sit at the
+        // FRONT or their pairs never exist. Stable-partition must-block
+        // cells (opponent's >=4-window empties) ahead of the rest.
+        if (use_policy) {
+            int8_t opp = (_cur_player == P_A) ? P_B : P_A;
+            auto threats = _find_threat_cells(opp);
+            if (!threats.empty())
+                std::stable_partition(cands.begin(), cands.end(),
+                    [&](Coord c) { return threats.count(c) != 0; });
+        }
         if (delta_keep > 0 && keep < static_cast<int>(scored.size())) {
             // Append top delta_keep dropped cells by the OTHER scorer:
             // tactical |delta| when policy selected, policy score when
