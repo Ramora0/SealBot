@@ -24,6 +24,10 @@ static inline int hex_distance(int dq, int dr) {
     return std::max({std::abs(dq), std::abs(dr), std::abs(dq + dr)});
 }
 
+// Powers of 3 for the 11-cell line-pattern index (conjunction features)
+static constexpr int POW3_11[11] = {1, 3, 9, 27, 81, 243, 729, 2187, 6561,
+                                    19683, 59049};
+
 // Zobrist tables -- flat arrays, deterministic per (q, r) via splitmix64.
 static uint64_t g_zobrist_a[ARR][ARR];
 static uint64_t g_zobrist_b[ARR][ARR];

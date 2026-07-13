@@ -33,6 +33,11 @@ inline void MinimaxBot::_make(int q, int r) {
     int8_t cell_val = (player == P_A) ? _cell_a : _cell_b;
     int qi = q + OFF, ri = r + OFF;
 
+    // ── Conjunction features: subtract affected cell classes (pre-state) ──
+    int ccq[32], ccr[32];
+    int ncc = _collect_conj_cells(qi, ri, ccq, ccr);
+    _conj_apply(ccq, ccr, ncc, -1.0f);
+
     // ── 6-cell windows ──
     bool won = false;
     if (player == P_A) {
@@ -61,8 +66,17 @@ inline void MinimaxBot::_make(int q, int r) {
         int old_pi = slot;
         int new_pi = old_pi + cell_val * _pow3[eo.k];
         _eval_score += pv[new_pi] - pv[old_pi];
+        const float* en = NET_EW[new_pi];
+        const float* eo_ = NET_EW[old_pi];
+        for (int k = 0; k < NET_K; k++) _acc[k] += en[k] - eo_[k];
         slot = new_pi;
     }
+
+    // ── 11-cell line patterns ──
+    for (int d = 0; d < 3; d++)
+        for (int m = -LP_CENTER; m <= LP_CENTER; m++)
+            _lp[d][qi + m * DIR_Q[d]][ri + m * DIR_R[d]]
+                += cell_val * POW3_11[LP_CENTER - m];
 
     // ── Candidates ──
     Coord cell = pack(q, r);
@@ -93,10 +107,18 @@ inline void MinimaxBot::_make(int q, int r) {
             _moves_left = 2;
         }
     }
+
+    // ── Conjunction features: add affected cell classes (post-state) ──
+    _conj_apply(ccq, ccr, ncc, 1.0f);
 }
 
 inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player) {
     int qi = q + OFF, ri = r + OFF;
+
+    // ── Conjunction features: subtract affected cell classes (pre-undo) ──
+    int ccq[32], ccr[32];
+    int ncc = _collect_conj_cells(qi, ri, ccq, ccr);
+    _conj_apply(ccq, ccr, ncc, -1.0f);
 
     // Remove stone
     _board[qi][ri] = 0;
@@ -137,8 +159,17 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
         int old_pi = slot;
         int new_pi = old_pi - cell_val * _pow3[eo.k];
         _eval_score += pv[new_pi] - pv[old_pi];
+        const float* en = NET_EW[new_pi];
+        const float* eo_ = NET_EW[old_pi];
+        for (int k = 0; k < NET_K; k++) _acc[k] += en[k] - eo_[k];
         slot = new_pi;
     }
+
+    // ── 11-cell line patterns ──
+    for (int d = 0; d < 3; d++)
+        for (int m = -LP_CENTER; m <= LP_CENTER; m++)
+            _lp[d][qi + m * DIR_Q[d]][ri + m * DIR_R[d]]
+                -= cell_val * POW3_11[LP_CENTER - m];
 
     // ── Candidates ──
     for (const auto& nb : g_nb_offsets) {
@@ -155,6 +186,9 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
         _cand_rc[qi][ri] = saved_rc;
         _cand_set.insert(cell);
     }
+
+    // ── Conjunction features: add affected cell classes (post-undo) ──
+    _conj_apply(ccq, ccr, ncc, 1.0f);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -177,6 +211,117 @@ inline void MinimaxBot::_undo_turn(const UndoStep steps[], int n) {
     for (int i = n - 1; i >= 0; i--)
         _undo(pack_q(steps[i].cell), pack_r(steps[i].cell),
               steps[i].state, steps[i].player);
+}
+
+// ────────────────────────────────────────────────────────────────
+//  Position loading + eval-array initialisation (shared by
+//  get_move and the static_eval / debug_features hooks)
+// ────────────────────────────────────────────────────────────────
+inline void MinimaxBot::_load_position(const GameState& gs) {
+    std::memset(_board, 0, sizeof(_board));
+    _board_cells.clear();
+    for (const auto& cell : gs.cells) {
+        _board[cell.q + OFF][cell.r + OFF] = cell.player;
+        _board_cells.push_back(pack(cell.q, cell.r));
+    }
+    _player     = gs.cur_player;
+    _move_count = gs.move_count;
+    if (_player == P_A) { _cell_a = 1; _cell_b = 2; }
+    else                { _cell_a = 2; _cell_b = 1; }
+}
+
+inline void MinimaxBot::_init_eval_arrays() {
+    std::memset(_wp, 0, sizeof(_wp));
+    std::memset(_lp, 0, sizeof(_lp));
+    std::memset(_acc, 0, sizeof(_acc));
+    _eval_score = 0.0;
+
+    const double* pv = _pv.data();
+    for (Coord c : _board_cells) {
+        int bq = pack_q(c), br = pack_r(c);
+        int bqi = bq + OFF, bri = br + OFF;
+        for (const auto& eo : _eval_offsets) {
+            int sqi = bqi - eo.oq, sri = bri - eo.or_;
+            int& slot = _wp[eo.d_idx][sqi][sri];
+            if (slot != 0) continue;
+            int sq = bq - eo.oq, sr = br - eo.or_;
+            int d = eo.d_idx;
+            int pi = 0;
+            bool has = false;
+            for (int j = 0; j < _eval_length; j++) {
+                int8_t v = _board[sq + j * DIR_Q[d] + OFF][sr + j * DIR_R[d] + OFF];
+                if (v != 0) {
+                    pi += ((v == P_A) ? _cell_a : _cell_b) * _pow3[j];
+                    has = true;
+                }
+            }
+            if (has) {
+                slot = pi;
+                _eval_score += pv[pi];
+                const float* e = NET_EW[pi];
+                for (int k = 0; k < NET_K; k++) _acc[k] += e[k];
+            }
+        }
+    }
+
+    // 11-cell line patterns
+    for (Coord c : _board_cells) {
+        int bqi = pack_q(c) + OFF, bri = pack_r(c) + OFF;
+        int8_t v = _board[bqi][bri];
+        int cell_val = (v == P_A) ? _cell_a : _cell_b;
+        for (int d = 0; d < 3; d++)
+            for (int m = -LP_CENTER; m <= LP_CENTER; m++)
+                _lp[d][bqi + m * DIR_Q[d]][bri + m * DIR_R[d]]
+                    += cell_val * POW3_11[LP_CENTER - m];
+    }
+
+    // Conjunction classes over the bounding box of influence
+    if (!_board_cells.empty()) {
+        int q0 = ARR, q1 = -1, r0 = ARR, r1 = -1;
+        for (Coord c : _board_cells) {
+            int bqi = pack_q(c) + OFF, bri = pack_r(c) + OFF;
+            q0 = std::min(q0, bqi); q1 = std::max(q1, bqi);
+            r0 = std::min(r0, bri); r1 = std::max(r1, bri);
+        }
+        q0 = std::max(q0 - LP_CENTER, 0); q1 = std::min(q1 + LP_CENTER, ARR - 1);
+        r0 = std::max(r0 - LP_CENTER, 0); r1 = std::min(r1 + LP_CENTER, ARR - 1);
+        for (int qi = q0; qi <= q1; qi++)
+            for (int ri = r0; ri <= r1; ri++) {
+                int cls = _conj_class(qi, ri);
+                if (cls < 0) continue;
+                const float* e = NET_EC[cls];
+                for (int k = 0; k < NET_K; k++) _acc[k] += e[k];
+            }
+    }
+}
+
+inline double MinimaxBot::static_eval(const GameState& gs) {
+    _load_position(gs);
+    _init_eval_arrays();
+    return _leaf_eval();
+}
+
+inline std::pair<std::vector<std::pair<int,int>>, std::vector<std::pair<int,int>>>
+MinimaxBot::debug_features(const GameState& gs) {
+    _load_position(gs);
+    _init_eval_arrays();
+
+    flat_map<int, int> wf, cf;
+    for (int d = 0; d < 3; d++)
+        for (int qi = 0; qi < ARR; qi++)
+            for (int ri = 0; ri < ARR; ri++) {
+                int pi = _wp[d][qi][ri];
+                if (pi != 0) wf[pi]++;
+            }
+    for (int qi = 0; qi < ARR; qi++)
+        for (int ri = 0; ri < ARR; ri++) {
+            int cls = _conj_class(qi, ri);
+            if (cls >= 0) cf[cls]++;
+        }
+
+    std::vector<std::pair<int,int>> wv(wf.begin(), wf.end());
+    std::vector<std::pair<int,int>> cv(cf.begin(), cf.end());
+    return {wv, cv};
 }
 
 // ────────────────────────────────────────────────────────────────

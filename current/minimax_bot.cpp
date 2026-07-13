@@ -73,6 +73,39 @@ struct MinimaxBotWrapper {
         }
         return result;
     }
+
+    double eval_position(py::object game) {
+        return engine.static_eval(extract_game_state(game));
+    }
+
+    // Max |acc drift| after a search: exercises make/undo + rollback, then
+    // compares the incrementally-maintained accumulator to a fresh recompute.
+    double acc_drift(py::object game, double tl) {
+        auto gs = extract_game_state(game);
+        double tl_save = engine.time_limit;
+        engine.time_limit = tl;
+        engine.get_move(gs);
+        engine.time_limit = tl_save;
+        auto after_search = engine.get_acc();
+        engine.static_eval(gs);  // fresh recompute of the same position
+        auto fresh = engine.get_acc();
+        double worst = 0.0;
+        for (size_t k = 0; k < fresh.size(); k++)
+            worst = std::max(worst, std::abs(
+                static_cast<double>(after_search[k]) - fresh[k]));
+        return worst;
+    }
+
+    py::dict feature_counts(py::object game) {
+        auto [wf, cf] = engine.debug_features(extract_game_state(game));
+        py::dict w, c;
+        for (auto& [k, v] : wf) w[py::int_(k)] = v;
+        for (auto& [k, v] : cf) c[py::int_(k)] = v;
+        py::dict out;
+        out["w"] = w;
+        out["c"] = c;
+        return out;
+    }
 };
 
 PYBIND11_MODULE(minimax_cpp, m) {
@@ -82,6 +115,10 @@ PYBIND11_MODULE(minimax_cpp, m) {
         .def(py::init<double>(), py::arg("time_limit") = 0.05)
         .def("get_move", &MinimaxBotWrapper::get_move, py::arg("game"))
         .def("extract_pv", &MinimaxBotWrapper::extract_pv)
+        .def("eval_position", &MinimaxBotWrapper::eval_position, py::arg("game"))
+        .def("feature_counts", &MinimaxBotWrapper::feature_counts, py::arg("game"))
+        .def("acc_drift", &MinimaxBotWrapper::acc_drift,
+             py::arg("game"), py::arg("tl") = 0.05)
         .def("__str__", [](const MinimaxBotWrapper&) { return "SealBot"; })
         .def_property("time_limit",
             [](MinimaxBotWrapper& b) { return b.engine.time_limit; },

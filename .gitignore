@@ -9,3 +9,5 @@ positions/
 experiments/cma/output/
 CLAUDE.md
 scratch.txt
+experiments/nnue/data/
+experiments/nnue/output/

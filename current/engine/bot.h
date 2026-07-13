@@ -10,6 +10,8 @@
 
 #include "containers.h"
 #include "tables.h"
+#include "../codebook_data.h"
+#include "../net_data.h"
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MinimaxBot  (namespace opt -- flat-array variant)
@@ -73,6 +75,14 @@ public:
     MoveResult get_move(const GameState& gs);
     std::vector<PVStep> extract_pv();
 
+    // ── Debug / training hooks (implemented in board.h) ──
+    double static_eval(const GameState& gs);
+    std::pair<std::vector<std::pair<int,int>>, std::vector<std::pair<int,int>>>
+        debug_features(const GameState& gs);
+    std::vector<float> get_acc() const {
+        return std::vector<float>(_acc, _acc + NET_K);
+    }
+
     // ── Check if either player has an instant win ──
     bool has_instant_win() const {
         auto [fa, _a] = _find_instant_win(P_A);
@@ -117,6 +127,10 @@ private:
 
     // ── N-cell eval window patterns ──
     int _wp[3][ARR][ARR] = {};
+
+    // ── NNUE state: accumulator + 11-cell line patterns per (cell, dir) ──
+    float _acc[NET_K] = {};
+    int   _lp[3][ARR][ARR] = {};
 
     // ── Candidates ──
     int8_t  _cand_rc[ARR][ARR] = {};
@@ -193,6 +207,8 @@ private:
         int8_t board[ARR][ARR];
         std::pair<int8_t,int8_t> wc[3][ARR][ARR];
         int wp[3][ARR][ARR];
+        float acc[NET_K];
+        int lp[3][ARR][ARR];
         int8_t cand_rc[ARR][ARR];
         bool cand_bits[ARR][ARR];
         std::vector<Coord> cand_vec;
@@ -216,8 +232,77 @@ private:
                       ^ (static_cast<uint64_t>(_moves_left) * 0x517cc1b727220a95ULL);
     }
 
+    // ── NNUE inline helpers ──
+
+    // Conjunction class of a cell, or -1 if no stones within line range.
+    inline int _conj_class(int qi, int ri) const {
+        int lp0 = _lp[0][qi][ri], lp1 = _lp[1][qi][ri], lp2 = _lp[2][qi][ri];
+        if ((lp0 | lp1 | lp2) == 0) return -1;
+        uint8_t c0 = LINE_CODEBOOK[lp0];
+        uint8_t c1 = LINE_CODEBOOK[lp1];
+        uint8_t c2 = LINE_CODEBOOK[lp2];
+        int8_t b = _board[qi][ri];
+        if (b == 0) {
+            int p0 = (c0 & 7) * 6 + (c0 >> 3);
+            int p1 = (c1 & 7) * 6 + (c1 >> 3);
+            int p2 = (c2 & 7) * 6 + (c2 >> 3);
+            return CANON_EMPTY[(p0 * 36 + p1) * 36 + p2];
+        }
+        int digit = (b == P_A) ? _cell_a : _cell_b;  // 1 = root player
+        int o0 = (digit == 1) ? (c0 & 7) : (c0 >> 3);
+        int o1 = (digit == 1) ? (c1 & 7) : (c1 >> 3);
+        int o2 = (digit == 1) ? (c2 & 7) : (c2 >> 3);
+        return CONJ_EMPTY_CLASSES + (digit == 2) * CONJ_OCC_RANKS
+               + CANON_OCC[(o0 * 6 + o1) * 6 + o2];
+    }
+
+    // The 31 cells whose conjunction class can change when (qi, ri) flips.
+    inline int _collect_conj_cells(int qi, int ri, int* cq, int* cr) const {
+        int n = 0;
+        cq[n] = qi; cr[n] = ri; n++;
+        for (int d = 0; d < 3; d++)
+            for (int m = -LP_CENTER; m <= LP_CENTER; m++) {
+                if (m == 0) continue;
+                cq[n] = qi + m * DIR_Q[d];
+                cr[n] = ri + m * DIR_R[d];
+                n++;
+            }
+        return n;
+    }
+
+    inline void _conj_apply(const int* cq, const int* cr, int n, float sign) {
+        for (int i = 0; i < n; i++) {
+            int cls = _conj_class(cq[i], cr[i]);
+            if (cls < 0) continue;
+            const float* e = NET_EC[cls];
+            if (sign > 0.f)
+                for (int k = 0; k < NET_K; k++) _acc[k] += e[k];
+            else
+                for (int k = 0; k < NET_K; k++) _acc[k] -= e[k];
+        }
+    }
+
+    inline double _leaf_eval() const {
+        float h[NET_K];
+        for (int k = 0; k < NET_K; k++) {
+            float v = _acc[k];
+            h[k] = v < 0.f ? 0.f : (v > NET_CLIP ? NET_CLIP : v);
+        }
+        float g0 = static_cast<float>(_move_count) * 0.02f;
+        float out = NET_B2;
+        for (int j = 0; j < NET_H; j++) {
+            float s = NET_B1[j];
+            for (int k = 0; k < NET_K; k++) s += NET_W1[j][k] * h[k];
+            s += NET_W1[j][NET_K] * g0;
+            if (s > 0.f) out += NET_W2[j] * s;
+        }
+        return static_cast<double>(out) * NET_OUT_SCALE;
+    }
+
     // ── Method declarations (implemented in board.h, movegen.h, search.h) ──
     void _build_eval_tables();
+    void _load_position(const GameState& gs);
+    void _init_eval_arrays();
     void _make(int q, int r);
     void _undo(int q, int r, const SavedState& st, int8_t player);
     int  _make_turn(const Turn& turn, UndoStep steps[2]);

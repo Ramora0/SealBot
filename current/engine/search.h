@@ -87,32 +87,8 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
         }
     }
 
-    // ── Init N-cell eval windows ──
-    _eval_score = 0.0;
-    {
-        const double* pv = _pv.data();
-        for (Coord c : _board_cells) {
-            int bq = pack_q(c), br = pack_r(c);
-            int bqi = bq + OFF, bri = br + OFF;
-            for (const auto& eo : _eval_offsets) {
-                int sqi = bqi - eo.oq, sri = bri - eo.or_;
-                int& slot = _wp[eo.d_idx][sqi][sri];
-                if (slot != 0) continue;
-                int sq = bq - eo.oq, sr = br - eo.or_;
-                int d = eo.d_idx;
-                int pi = 0;
-                bool has = false;
-                for (int j = 0; j < _eval_length; j++) {
-                    int8_t v = _board[sq + j * DIR_Q[d] + OFF][sr + j * DIR_R[d] + OFF];
-                    if (v != 0) {
-                        pi += ((v == P_A) ? _cell_a : _cell_b) * _pow3[j];
-                        has = true;
-                    }
-                }
-                if (has) { slot = pi; _eval_score += pv[pi]; }
-            }
-        }
-    }
+    // ── Init N-cell eval windows + NNUE accumulator (wp, lp, acc) ──
+    _init_eval_arrays();
 
     // ── Init candidates ──
     for (Coord c : _board_cells) {
@@ -141,6 +117,8 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     std::memcpy(_saved->board, _board, sizeof(_board));
     std::memcpy(_saved->wc, _wc, sizeof(_wc));
     std::memcpy(_saved->wp, _wp, sizeof(_wp));
+    std::memcpy(_saved->acc, _acc, sizeof(_acc));
+    std::memcpy(_saved->lp, _lp, sizeof(_lp));
     std::memcpy(_saved->cand_rc, _cand_rc, sizeof(_cand_rc));
     std::memcpy(_saved->cand_bits, _cand_set.bits, sizeof(_cand_set.bits));
     _saved->cand_vec = _cand_set.vec;
@@ -180,6 +158,8 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
             std::memcpy(_board, _saved->board, sizeof(_board));
             std::memcpy(_wc, _saved->wc, sizeof(_wc));
             std::memcpy(_wp, _saved->wp, sizeof(_wp));
+            std::memcpy(_acc, _saved->acc, sizeof(_acc));
+            std::memcpy(_lp, _saved->lp, sizeof(_lp));
             std::memcpy(_cand_rc, _saved->cand_rc, sizeof(_cand_rc));
             std::memcpy(_cand_set.bits, _saved->cand_bits, sizeof(_cand_set.bits));
             _cand_set.vec = std::move(_saved->cand_vec);
@@ -346,7 +326,7 @@ inline double MinimaxBot::_quiescence(double alpha, double beta, int qdepth) {
         return sc;
     }
 
-    double stand_pat = _eval_score;
+    double stand_pat = _leaf_eval();
     int8_t current  = _cur_player;
     int8_t opponent = (current == P_A) ? P_B : P_A;
 
@@ -547,7 +527,7 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
         std::vector<Coord> cands(_cand_set.begin(), _cand_set.end());
         if (cands.size() < 2) {
             if (cands.empty()) {
-                double sc = _eval_score;
+                double sc = _leaf_eval();
                 _tt_store_entry(ttk, depth, sc, TT_EXACT, Turn{}, false);
                 return sc;
             }
@@ -592,7 +572,7 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
     }
 
     if (turns.empty()) {
-        double sc = _eval_score;
+        double sc = _leaf_eval();
         _tt_store_entry(ttk, depth, sc, TT_EXACT, Turn{}, false);
         return sc;
     }
