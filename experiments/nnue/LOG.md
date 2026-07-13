@@ -35,6 +35,21 @@ fixed opponent). `pv[]`/`_eval_score` retained ONLY for move ordering.
 
 ## Results
 
-| Gen | Data | Train | Gate vs best/ (orig) | Notes |
-|-----|------|-------|----------------------|-------|
-| 0   | 50k games / ~700k pos (from original bot) | — | — | in progress |
+| Run | Eval | Gate vs best/ (orig, 100g @ 0.1s) | Notes |
+|-----|------|------------------------------------|-------|
+| random-init | net only | 0W/91L/9D (stale-build bug artifact) | gate.sh now force-cleans |
+| v1 (wdl, scale 4000, 25 ep) | net only | 10W/90L, Elo −382 | flat/saturated logits |
+| v2 (wdl, scale 15000, tempo, 60 ep) | net only | 7W/93L, Elo −449 | same wall |
+| v2 + lin_blend 0.3 | **hybrid** | **Elo +67 (CI −2..+136, p=0.057)** | first win; under relabel load |
+
+Blend sweep (v2 net, 0.1s, under relabel load):
+- blend 0.30, 200g: 55.2% (+37, p=0.14); pooled w/ first 100g run ≈ +47
+- blend 0.15, 100g: 61.0% (**+78, p=0.028**) — best so far
+- blend 0.60, 100g: 50.0% (linear drowns the net)
+
+Key diagnostic (11.8k non-mate deep-labeled positions):
+- sign agreement w/ deep search (|score|>2000): net 0.84, old linear 0.57
+- Spearman rank corr: net 0.18, old linear 0.43
+- => net knows WHO is winning; linear knows WHICH move is locally better.
+  Hybrid combines both. Deep-label retrain (tl 0.12) queued to fix the
+  net's resolution directly; score-space Huber loss added as option.
