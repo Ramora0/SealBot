@@ -327,3 +327,19 @@ exactly those margins. "Why isn't it better than linear" is resolved.
 
 Next: engine port of trunk v1.1 (both heads), then head-to-head + strix.
 Offline wins have fooled us before — play is the only real gate.
+
+## Trunk v1.2 PLAY TEST FAILED: strix 149-1 (gap -799), h2h ~= bare distill
+
+Offline-vs-play lesson #3. h2h vs distill_frozen: blend.15 40% (-70),
+blend0 55% (+35). Champion is +400 over the same opponent, so the trunk
+build lost the policy contribution almost exactly. Mirror-POV hypothesis
+REJECTED by measurement (legacy MAE 427 vs trunk 476 engine units --
+same asymmetry, legacy plays fine). New prime suspect: the trunk POLICY
+head in-engine (never parity-tested, replaced the proven tables at every
+ordering site when SEAL_EVAL=trunk). Confirmed secondary: blend .15
+actively harms the trunk (-90 h2h) -- contrastive margins + linear
+double-count.
+
+Fix plan: SEAL_TRUNK_POLICY knob (value and policy sourced independently)
++ policy_debug binding (engine-vs-python parity for the policy head) +
+2x2 fixed-depth ablation {value: distill|trunk} x {policy: tables|trunk}.
