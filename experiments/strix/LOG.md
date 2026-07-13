@@ -263,3 +263,44 @@ self-consistency; still the right ceiling reference.
 v1.1 plan: global-context policy head + pairwise logistic sibling loss on
 strix child values (|dOracle|-weighted) + 580k human positions (labeled
 via single-pass value+policy, human_extract.py).
+
+## Independent audit (agent sweep): why nets don't beat linear at selection
+
+Finding 1 CONFIRMED BUG: hexo_rs.GameState.from_state does NOT flag
+completed-6 boards as terminal; state_from_cells never returns terminal
+states either -> the "terminal child => +1.0" branches in metric_battery
+and sibling_extract were dead code, and won boards went to strix as live
+states (garbage values: 828/120k sibling children complete six, 94%
+labeled <0.9, 421 labeled <= -0.9 — winning moves labeled WORST at max
+contrast weight). Fixed: completes_six() manual detection in
+sibling_extract (imported by battery); sibling_targets regenerated.
+Battery impact modest (corrected REAL regret: linear .231, distill .188,
+trunk .189, tables .168); training impact would have been severe.
+
+Finding 2 CONFIRMED ARTIFACT: regret aggregates two opposite-signed
+classes. REAL ml=1 bases (2nd stone of turn): trunk .109 << linear .450
+(linear is ml-blind, picks oracle -1.0 losers). REAL ml=2 bases (1st
+stone): linear .121 << trunk .229. HUMAN is 100% ml=2 (turn boundaries)
+so it shows only linear's good class. Nets are already confidently
+better at HALF the game. Battery now reports regret_ml1/regret_ml2;
+strong_play_recs had 15 dup bases, now deduped.
+
+Finding 3 CONFIRMED MECHANISM (2-ply oracle verified, corr .97 w/ 1-ply):
+pointwise residual (~0.2 tanh) > within-sibling margin (~0.14). Net
+first-stone failures concentrate in must-block-live-4 positions where
+turn stones don't commute (11/12 trunk big failures picked attack over
+block); linear's +-49k window weights hard-code that priority. Huber
+can't fix: contrast never in loss. => sibling-contrastive loss is the
+right fix; gate on per-ml regret.
+
+Finding 4: ptrunk==tables is receptive field, not capacity (per-position
+spearman between them .88-.90; 600x capacity moved target-fit 32->36%).
+Global-context head is the v1.1 answer; policy loss also plateaus while
+value keeps improving in joint training (head competition).
+
+Finding 5 clean: POV/flip/tempo/blend/joins all verified correct.
+Latent quirk: PATTERN_VALUES for completed-6 windows ~untrained (-56)
+— engine never sees won boards so harmless in play, but all offline
+child scoring walks into it (linear ranks the winning move ~last).
+
+v1.1 chain running: fixed sibling regen -> trunk_train2 --human.

@@ -51,6 +51,7 @@ from features import extract_features, net_forward
 from strix_bridge import load_strix, state_from_cells, value_batch
 from refutation_recall import (cand_cells, load_tables, rankers,
                                forced_blocks, perturb)
+from sibling_extract import completes_six
 from policy_extract import policy_batch
 import trunk_train
 from trunk_train import Trunk
@@ -78,7 +79,12 @@ def load_frozen(dirname):
 class TrunkScorer:
     def __init__(self, path, device="cuda"):
         ck = torch.load(path, map_location="cpu")
-        self.m = Trunk()
+        self.arch = ck.get("arch", "v1")
+        if self.arch == "v2":
+            from trunk_train2 import Trunk2
+            self.m = Trunk2()
+        else:
+            self.m = Trunk()
         self.m.load_state_dict(ck["state"])
         self.m.to(device).eval()
         self.dev = device
@@ -112,9 +118,22 @@ class TrunkScorer:
                 out[s:s + B] = v.cpu().numpy()
         return out
 
-    def policy_many(self, cand_trip):
+    def policy_many(self, cand_trip, parent=None):
         with torch.no_grad():
             t = torch.from_numpy(cand_trip.astype(np.int64)).to(self.dev)
+            if self.arch == "v2":
+                trip, wi, wc = parent
+                acc = self.m.accum(
+                    torch.from_numpy(trip.astype(np.int64)).to(self.dev),
+                    torch.zeros(len(trip), dtype=torch.int64,
+                                device=self.dev),
+                    1,
+                    torch.from_numpy(wi.astype(np.int64)).to(self.dev),
+                    torch.from_numpy(wc.astype(np.float32)).to(self.dev),
+                    torch.tensor([0, len(wi)], device=self.dev))
+                seg_p = torch.zeros(len(cand_trip), dtype=torch.int64,
+                                    device=self.dev)
+                return self.m.policy(t, acc, seg_p).cpu().numpy()
             return self.m.policy(t).cpu().numpy()
 
 
@@ -153,6 +172,14 @@ def main():
     rng = random.Random(31)
     with open(SCRIPT_DIR / "strong_play_recs.pkl", "rb") as fh:
         recs = [r[:4] for r in pickle.load(fh) if r[3] >= 10]
+    seen_b = set()
+    ded = []
+    for r in recs:
+        k = tuple(sorted(map(tuple, r[0])))
+        if k not in seen_b:
+            seen_b.add(k)
+            ded.append(r)
+    recs = ded
     rng.shuffle(recs)
 
     def make_perturbed(base_recs):
@@ -202,11 +229,14 @@ def main():
         states, term, drop = [], np.zeros(len(child_meta), bool), \
             np.zeros(len(child_meta), bool)
         for i, (ccells, cm, cml, cmc, bi, flip) in enumerate(child_meta):
+            q, r, pl = ccells[-1]
+            occ = {(c[0], c[1]): c[2] for c in ccells}
+            if completes_six(occ, q, r, pl):
+                term[i] = True
+                continue
             s = state_from_cells(ccells, cm, cml, gc)
             if s is None:
                 drop[i] = True
-            elif s.is_terminal():
-                term[i] = True
             else:
                 states.append(s)
         vals = value_batch(model, mc_, states, chunk=512)
@@ -276,9 +306,10 @@ def main():
             pol_scores["tables"][kidx] = pol
             pol_scores["delta"][kidx] = delta
             if trunk:
-                _, _, _, ctrip = trunk_train.extract(
+                ptrip, pwi, pwc, ctrip = trunk_train.extract(
                     [tuple(c) for c in cells], mover, kept)
-                pol_scores["ptrunk"][kidx] = trunk.policy_many(ctrip)
+                pol_scores["ptrunk"][kidx] = trunk.policy_many(
+                    ctrip, parent=(ptrip, pwi, pwc))
             # strix logits: translate coords if the bridge translated
             owner = {(q, r): p for q, r, p in cells}
             if owner.get((0, 0)) != 1:
@@ -297,12 +328,14 @@ def main():
         seg = np.array([cm[4] for cm in child_meta])
         keep = ~drop
 
-        def per_position_metrics(scores):
+        def per_position_metrics(scores, ml_filter=None):
             sib = {"all": [0, 0], "close": [0, 0], "dec": [0, 0]}
             top1 = 0
             regs = []
             npos = 0
             for bi, cells, mover, ml, mc, kept, kidx in base_meta:
+                if ml_filter is not None and ml != ml_filter:
+                    continue
                 m = keep[kidx]
                 if m.sum() < 2:
                     continue
@@ -324,7 +357,7 @@ def main():
                 pick = int(np.argmax(sc))
                 top1 += int(o[pick] == o.max())
                 regs.append(float(o.max() - o[pick]))
-            regs = np.array(regs)
+            regs = np.array(regs) if regs else np.zeros(1)
             return {
                 "sib_all": sib["all"][0] / max(sib["all"][1], 1),
                 "sib_close": sib["close"][0] / max(sib["close"][1], 1),
@@ -349,9 +382,16 @@ def main():
                     hit += int(r[j] < 3)
             return hit / max(tot, 1)
 
+        def add_ml_split(met, sc):
+            for mlv in (1, 2):
+                sub = per_position_metrics(sc, ml_filter=mlv)
+                met[f"regret_ml{mlv}"] = sub["regret_mean"]
+                met[f"top1_ml{mlv}"] = sub["top1"]
+            return met
+
         res = {}
         for name, sc in val_scores.items():
-            met = per_position_metrics(sc)
+            met = add_ml_split(per_position_metrics(sc), sc)
             # old-style: base position value vs oracle (value nets score
             # the base position itself = child of the "pre-position")
             bo, bs = [], []
@@ -376,7 +416,7 @@ def main():
             met["posval_spearman"] = spearman(np.array(bs), np.array(bo))
             res[f"value/{name}"] = met
         for name, sc in pol_scores.items():
-            met = per_position_metrics(sc)
+            met = add_ml_split(per_position_metrics(sc), sc)
             met["fb_top3"] = fb_rank_metrics(sc)
             res[f"policy/{name}"] = met
         results[set_name] = res
@@ -386,7 +426,8 @@ def main():
         json.dump(results, fh, indent=1)
 
     cols = ["posval_spearman", "sib_all", "sib_close", "sib_dec", "top1",
-            "regret_mean", "regret_p90", "fb_top3"]
+            "regret_mean", "regret_p90", "regret_ml1", "regret_ml2",
+            "fb_top3"]
     for set_name, res in results.items():
         print(f"\n=== {set_name} ===")
         print(f"{'scorer':<18}" + "".join(f"{c:>12}" for c in cols))
