@@ -8,6 +8,7 @@
  */
 #pragma once
 
+#include <cstdio>
 #include <cstdlib>
 
 #include "containers.h"
@@ -15,6 +16,7 @@
 #include "../codebook_data.h"
 #include "../net_data.h"
 #include "../policy_data.h"
+#include "../trunk_data.h"
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MinimaxBot  (namespace opt -- flat-array variant)
@@ -65,6 +67,11 @@ public:
             delta_keep = std::atoi(e);
         if (const char* e = std::getenv("SEAL_POLICY_MODE"))
             policy_mode = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_EVAL"))
+            _use_trunk = (std::string(e) == std::string("trunk"));
+        if (const char* e = std::getenv("SEAL_TRUNK_BLEND"))
+            _trunk_blend = std::atof(e);
+        if (_use_trunk && !_load_eraw()) _use_trunk = false;
     }
 
     // ── Pattern loading (call from wrapper after construction) ──
@@ -106,6 +113,8 @@ public:
     std::pair<std::vector<std::pair<int,int>>, std::vector<std::pair<int,int>>>
         debug_features(const GameState& gs);
     std::vector<float> get_acc() const {
+        if (_use_trunk)
+            return std::vector<float>(_acc2, _acc2 + TRK_K);
         return std::vector<float>(_acc, _acc + NET_K);
     }
 
@@ -158,6 +167,38 @@ private:
     float   _acc[NET_K] = {};
     int     _lp[3][ARR][ARR] = {};
     uint8_t _lc[3][ARR][ARR] = {};  // cached LINE_CODEBOOK[_lp[d][q][r]]
+
+    // ── Trunk (cellnl) state: SEAL_EVAL=trunk switches leaf eval + policy
+    // to the shared-trunk net. acc2 = sum of clamped per-cell activations
+    // (raw 3^11 line embeddings summed over 3 dirs) + EW bag. The E_raw
+    // table (3^11 x K floats, ~23 MB) is loaded from TRK_ERAW_PATH at
+    // construction (SEAL_TRUNK_BLOB overrides), shared across instances. ──
+    bool   _use_trunk = false;
+    float  _trunk_blend = TRK_LIN_BLEND;
+    float  _acc2[TRK_K] = {};
+    inline static std::vector<float> g_eraw;
+
+    static bool _load_eraw() {
+        if (!g_eraw.empty()) return true;
+        const char* path = std::getenv("SEAL_TRUNK_BLOB");
+        if (!path) path = TRK_ERAW_PATH;
+        std::FILE* f = std::fopen(path, "rb");
+        if (!f) {
+            std::fprintf(stderr, "trunk: cannot open %s, falling back\n",
+                         path);
+            return false;
+        }
+        g_eraw.resize(static_cast<size_t>(TRK_ERAW_ROWS) * TRK_K);
+        size_t got = std::fread(g_eraw.data(), sizeof(float),
+                                g_eraw.size(), f);
+        std::fclose(f);
+        if (got != g_eraw.size()) {
+            std::fprintf(stderr, "trunk: short read, falling back\n");
+            g_eraw.clear();
+            return false;
+        }
+        return true;
+    }
 
     // ── Candidates ──
     int8_t  _cand_rc[ARR][ARR] = {};
@@ -235,6 +276,7 @@ private:
         std::pair<int8_t,int8_t> wc[3][ARR][ARR];
         int wp[3][ARR][ARR];
         float acc[NET_K];
+        float acc2[TRK_K];
         int lp[3][ARR][ARR];
         uint8_t lc[3][ARR][ARR];
         int8_t cand_rc[ARR][ARR];
@@ -284,11 +326,90 @@ private:
                + CANON_OCC[(o0 * 6 + o1) * 6 + o2];
     }
 
+    // ── Trunk inline helpers ──
+
+    inline const float* _eraw_row(int code) const {
+        return g_eraw.data() + static_cast<size_t>(code) * TRK_K;
+    }
+
+    // Add (sgn=+1) or remove (sgn=-1) the clamped activation of one cell.
+    inline void _trunk_cell(int qi, int ri, float sgn) {
+        int l0 = _lp[0][qi][ri], l1 = _lp[1][qi][ri], l2 = _lp[2][qi][ri];
+        if ((l0 | l1 | l2) == 0) return;
+        const float* e0 = _eraw_row(l0);
+        const float* e1 = _eraw_row(l1);
+        const float* e2 = _eraw_row(l2);
+        for (int k = 0; k < TRK_K; k++) {
+            float s = e0[k] + e1[k] + e2[k];
+            s = s < 0.f ? 0.f : (s > TRK_CLIP ? TRK_CLIP : s);
+            _acc2[k] += sgn * s;
+        }
+    }
+
+    inline void _trunk_cells(const int* cq, const int* cr, int n, float sgn) {
+        for (int i = 0; i < n; i++) _trunk_cell(cq[i], cr[i], sgn);
+    }
+
+    inline double _leaf_eval_trunk() const {
+        float h[TRK_K];
+        for (int k = 0; k < TRK_K; k++) {
+            float v = _acc2[k];
+            h[k] = v < 0.f ? 0.f : (v > TRK_CLIP ? TRK_CLIP : v);
+        }
+        float g0 = static_cast<float>(_move_count) * 0.02f;
+        float g1 = (_cur_player == _player ? 1.0f : -1.0f)
+                   * static_cast<float>(_moves_left) * 0.5f;
+        float out = TRK_B2;
+        for (int j = 0; j < TRK_H; j++) {
+            float s = TRK_B1[j];
+            for (int k = 0; k < TRK_K; k++) s += TRK_W1[j][k] * h[k];
+            s += TRK_W1[j][TRK_K] * g0 + TRK_W1[j][TRK_K + 1] * g1;
+            if (s > 0.f) out += TRK_W2[j] * s;
+        }
+        return static_cast<double>(out) * TRK_OUT_SCALE
+               + _trunk_blend * _eval_score;
+    }
+
+    // Trunk policy head: MLP([clamp(cell act); clamp(acc2); g0; g1]).
+    // Mirror-trained: g1 sign carries who places (for_root => digit 1).
+    inline double _policy_score_trunk(int q, int r, bool for_root) const {
+        int qi = q + OFF, ri = r + OFF;
+        float x[2 * TRK_K + 2];
+        int l0 = _lp[0][qi][ri], l1 = _lp[1][qi][ri], l2 = _lp[2][qi][ri];
+        if ((l0 | l1 | l2) == 0) {
+            for (int k = 0; k < TRK_K; k++) x[k] = 0.f;
+        } else {
+            const float* e0 = _eraw_row(l0);
+            const float* e1 = _eraw_row(l1);
+            const float* e2 = _eraw_row(l2);
+            for (int k = 0; k < TRK_K; k++) {
+                float s = e0[k] + e1[k] + e2[k];
+                x[k] = s < 0.f ? 0.f : (s > TRK_CLIP ? TRK_CLIP : s);
+            }
+        }
+        for (int k = 0; k < TRK_K; k++) {
+            float v = _acc2[k];
+            x[TRK_K + k] = v < 0.f ? 0.f : (v > TRK_CLIP ? TRK_CLIP : v);
+        }
+        x[2 * TRK_K]     = static_cast<float>(_move_count) * 0.02f;
+        x[2 * TRK_K + 1] = (for_root ? 1.0f : -1.0f)
+                           * static_cast<float>(_moves_left) * 0.5f;
+        float out = TRK_P2B;
+        for (int j = 0; j < TRK_HP; j++) {
+            float s = TRK_P1B[j];
+            for (int k = 0; k < 2 * TRK_K + 2; k++)
+                s += TRK_P1[j][k] * x[k];
+            if (s > 0.f) out += TRK_P2[j] * s;
+        }
+        return static_cast<double>(out);
+    }
+
     // Strix-distilled ordering score for placing on empty (q, r). Tables
     // are mover-relative; _wp and classes are root-relative, so opponent
     // moves read through the color-mirror index tables. Higher = better
     // for the side placing the stone.
     inline double _policy_score(int q, int r, bool for_root) const {
+        if (_use_trunk) return _policy_score_trunk(q, r, for_root);
         int qi = q + OFF, ri = r + OFF;
         double s = 0.0;
         if (for_root) {
@@ -438,6 +559,7 @@ private:
     }
 
     inline double _leaf_eval() const {
+        if (_use_trunk) return _leaf_eval_trunk();
         float h[NET_K];
         for (int k = 0; k < NET_K; k++) {
             float v = _acc[k];

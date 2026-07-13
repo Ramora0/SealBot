@@ -32,6 +32,22 @@ sys.path.insert(0, SCRIPT_DIR)
 import trunk_train
 from trunk_train import (CLIP, H, HP, K, N_RAW, build, extract, multi_arange,
                          seg_ce, spearman)
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "nnue"))
+from features import MIRROR729
+
+
+def build_mir11():
+    """LUT: swap digits 1<->2 of base-3 11-digit line codes (color mirror)."""
+    codes = np.arange(3 ** 11, dtype=np.int64)
+    c = codes.copy()
+    m = np.zeros_like(codes)
+    p = 1
+    for _ in range(11):
+        d = c % 3
+        c //= 3
+        m += np.where(d == 1, 2, np.where(d == 2, 1, 0)) * p
+        p *= 3
+    return m
 
 
 # ── sibling dataset ─────────────────────────────────────────────────────
@@ -157,6 +173,9 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
     ap.add_argument("--human", action="store_true")
+    ap.add_argument("--mirror", action="store_true",
+                    help="alternate color-mirrored batches (negated target "
+                         "and tempo) so the engine can query root-relative")
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--out", default="output_trunk2")
     args = ap.parse_args()
@@ -209,7 +228,10 @@ def main():
         opt, T_max=args.epochs, eta_min=args.lr * 0.05)
     huber = nn.HuberLoss(delta=4.0)
 
-    def joint_batch(ids):
+    mir11 = torch.from_numpy(build_mir11())
+    mir729 = torch.from_numpy(MIRROR729.astype(np.int64))
+
+    def joint_batch(ids, mirror=False):
         clens = (coffs[ids + 1] - coffs[ids])
         cg = multi_arange(coffs[ids], clens)
         seg_c = torch.from_numpy(np.repeat(np.arange(len(ids)), clens)).to(dev)
@@ -220,12 +242,17 @@ def main():
         plens = (poffs[ids + 1] - poffs[ids])
         pg = multi_arange(poffs[ids], plens)
         seg_p = torch.from_numpy(np.repeat(np.arange(len(ids)), plens)).to(dev)
-        return (trip[cg].to(dev), seg_c, len(ids), wi[wg].to(dev),
+        bt, bwi, bct = trip[cg], wi[wg], ctrip[pg]
+        bg1, by = g1[ids], tgt[ids]
+        if mirror:
+            bt, bwi, bct = mir11[bt], mir729[bwi], mir11[bct]
+            bg1, by = -bg1, -by
+        return (bt.to(dev), seg_c, len(ids), bwi.to(dev),
                 wc[wg].to(dev), torch.from_numpy(wo).to(dev),
-                g0[ids].to(dev), g1[ids].to(dev),
-                ctrip[pg].to(dev), logit[pg].to(dev), seg_p, tgt[ids].to(dev))
+                g0[ids].to(dev), bg1.to(dev),
+                bct.to(dev), logit[pg].to(dev), seg_p, by.to(dev))
 
-    def sib_batch(gids):
+    def sib_batch(gids, mirror=False):
         """gather children of sibling groups; returns feats + pair arrays."""
         chlens = (goffs[gids + 1] - goffs[gids])
         ch = multi_arange(goffs[gids], chlens)     # child row ids
@@ -250,10 +277,15 @@ def main():
                     sg.append(1.0 if d > 0 else -1.0)
                     wt.append(min(abs(d), 0.5) / 0.5)
             base += int(L)
-        return ((strip[cg].to(dev), seg_c, len(ch), swi[wg].to(dev),
+        bt, bwi = strip[cg], swi[wg]
+        bg1, bty, bfl = sg1[ch], stgt[ch], sflip[ch]
+        if mirror:
+            bt, bwi = mir11[bt], mir729[bwi]
+            bg1, bty, bfl = -bg1, -bty, -bfl
+        return ((bt.to(dev), seg_c, len(ch), bwi.to(dev),
                  swc[wg].to(dev), torch.from_numpy(wo).to(dev),
-                 sg0[ch].to(dev), sg1[ch].to(dev)),
-                stgt[ch].to(dev), sflip[ch].to(dev),
+                 sg0[ch].to(dev), bg1.to(dev)),
+                bty.to(dev), bfl.to(dev),
                 torch.tensor(ii, device=dev), torch.tensor(jj, device=dev),
                 torch.tensor(sg, device=dev), torch.tensor(wt, device=dev))
 
@@ -280,9 +312,11 @@ def main():
             gids = np.sort(gtrain_ids[gpos:gpos + args.sib_parents])
             gpos += args.sib_parents
 
+            mirror = args.mirror and (nb % 2 == 1)
             (bt, seg_c, npos, bwi, bwc, bwo, bg0, bg1, bct, btl, seg_p,
-             by) = joint_batch(ids)
-            sfeat, sby, sbflip, ii, jj, sgn, wt = sib_batch(gids)
+             by) = joint_batch(ids, mirror=mirror)
+            sfeat, sby, sbflip, ii, jj, sgn, wt = sib_batch(gids,
+                                                            mirror=mirror)
 
             opt.zero_grad()
             acc = model.accum(bt, seg_c, npos, bwi, bwc, bwo)
