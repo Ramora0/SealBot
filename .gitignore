@@ -15,3 +15,4 @@ champion_frozen/
 experiments/nnue/output_*.log
 experiments/strix/*.log
 experiments/strix/*.json
+distill_frozen/

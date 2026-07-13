@@ -535,26 +535,12 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
             }
             turns = {{cands[0], cands[0]}};
         } else {
-            bool is_a = (_cur_player == P_A);
-            double dsign = maximizing ? DELTA_WEIGHT : -DELTA_WEIGHT;
-
-            // Score by delta only — keeps candidate selection
+            // Strix-distilled policy selection + linear-delta safety net —
             // deterministic and independent of history heuristic.
-            std::vector<std::pair<double, Coord>> scored;
-            scored.reserve(cands.size());
-            for (Coord c : cands) {
-                scored.push_back({_move_delta(pack_q(c), pack_r(c), is_a) * dsign, c});
-            }
-            std::sort(scored.begin(), scored.end(),
-                [](const auto& a, const auto& b) {
-                    if (a.first != b.first) return a.first > b.first;
-                    return a.second < b.second;
-                });
-
-            cands.clear();
-            int cap = no_cand_cap ? static_cast<int>(scored.size())
-                                  : std::min(static_cast<int>(scored.size()), CANDIDATE_CAP);
-            for (int i = 0; i < cap; i++) cands.push_back(scored[i].second);
+            bool is_a = (_cur_player == P_A);
+            int cap = no_cand_cap ? static_cast<int>(cands.size()) : cand_cap;
+            _select_candidates(cands, cap, maximizing, is_a,
+                               (policy_mode & 1) != 0);
 
             int n = static_cast<int>(cands.size());
             if (no_cand_cap) {

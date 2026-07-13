@@ -121,24 +121,10 @@ inline std::vector<Turn> MinimaxBot::_generate_turns() {
         return {};
     }
 
-    bool is_a = (_cur_player == P_A);
     bool maximizing = (_cur_player == _player);
-
-    std::vector<std::pair<double, Coord>> scored;
-    scored.reserve(cands.size());
-    for (Coord c : cands)
-        scored.push_back({_move_delta(pack_q(c), pack_r(c), is_a), c});
-    std::sort(scored.begin(), scored.end(), [maximizing](const auto& a, const auto& b) {
-        if (a.first != b.first)
-            return maximizing ? (a.first > b.first) : (a.first < b.first);
-        return a.second < b.second;
-    });
-
-    cands.clear();
-    int cap = no_cand_cap ? static_cast<int>(scored.size())
-                          : std::min(static_cast<int>(scored.size()), ROOT_CANDIDATE_CAP);
-    for (int i = 0; i < cap; i++)
-        cands.push_back(scored[i].second);
+    bool is_a = (_cur_player == P_A);
+    int cap = no_cand_cap ? static_cast<int>(cands.size()) : root_cand_cap;
+    _select_candidates(cands, cap, maximizing, is_a, (policy_mode & 2) != 0);
 
     // Colony candidate
     if (!_board_cells.empty()) {
@@ -176,9 +162,15 @@ inline std::vector<Turn> MinimaxBot::_generate_threat_turns(
     auto [found, wt] = _find_instant_win(_cur_player);
     if (found) return {wt};
 
-    bool is_a = (_cur_player == P_A);
     bool maximizing = (_cur_player == _player);
-    double sign = maximizing ? 1.0 : -1.0;
+
+    bool is_a = (_cur_player == P_A);
+    bool use_pol = (policy_mode & 1) != 0;
+    double sgn = maximizing ? 1.0 : -1.0;
+    auto cell_score = [&](Coord c) {
+        return use_pol ? _policy_score(pack_q(c), pack_r(c), maximizing)
+                       : _move_delta(pack_q(c), pack_r(c), is_a) * sgn;
+    };
 
     std::vector<Coord> opp_cells, my_cells;
     for (Coord c : opp_threats) if (_cand_set.count(c)) opp_cells.push_back(c);
@@ -198,11 +190,9 @@ inline std::vector<Turn> MinimaxBot::_generate_threat_turns(
                 pairs.push_back({(*primary)[i], (*primary)[j]});
         std::sort(pairs.begin(), pairs.end(),
             [&](const Turn& a, const Turn& b) {
-                double da = _move_delta(pack_q(a.first), pack_r(a.first), is_a)
-                          + _move_delta(pack_q(a.second), pack_r(a.second), is_a);
-                double db = _move_delta(pack_q(b.first), pack_r(b.first), is_a)
-                          + _move_delta(pack_q(b.second), pack_r(b.second), is_a);
-                return maximizing ? (da > db) : (da < db);
+                double da = cell_score(a.first) + cell_score(a.second);
+                double db = cell_score(b.first) + cell_score(b.second);
+                return da > db;
             });
         return pairs;
     }
@@ -212,7 +202,7 @@ inline std::vector<Turn> MinimaxBot::_generate_threat_turns(
     double best_d = -INF_SCORE;
     for (Coord c : _cand_set) {
         if (c != tc) {
-            double d = _move_delta(pack_q(c), pack_r(c), is_a) * sign;
+            double d = cell_score(c);
             if (d > best_d) { best_d = d; best_comp = c; }
         }
     }

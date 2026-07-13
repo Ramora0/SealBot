@@ -8,10 +8,13 @@
  */
 #pragma once
 
+#include <cstdlib>
+
 #include "containers.h"
 #include "tables.h"
 #include "../codebook_data.h"
 #include "../net_data.h"
+#include "../policy_data.h"
 
 // ═══════════════════════════════════════════════════════════════════════
 //  MinimaxBot  (namespace opt -- flat-array variant)
@@ -23,6 +26,18 @@ public:
     // ── Public attributes ──
     bool   pair_moves = true;
     bool   no_cand_cap = false;
+    // Candidate caps; overridable via SEAL_CAND_CAP / SEAL_ROOT_CAP env vars
+    // (read in the constructor) so gate harnesses can sweep without rebuilds.
+    int    cand_cap      = CANDIDATE_CAP;
+    int    root_cand_cap = ROOT_CANDIDATE_CAP;
+    // Tactical safety net: always keep the top-K cells by |linear delta| in
+    // the candidate set even when the policy ranks them below the cap
+    // (policy tail can drop forced blocks). SEAL_DELTA_KEEP overrides.
+    int    delta_keep    = 0;
+    // Ordering source: bit 0 = policy at interior nodes, bit 1 = policy at
+    // root. Default 2 (policy chooses at the root, delta orders the tree) —
+    // bisect showed +315 for root-only vs -512 interior. SEAL_POLICY_MODE.
+    int    policy_mode   = 2;
     double time_limit;
     int    last_depth  = 0;
     int    _nodes      = 0;
@@ -39,6 +54,14 @@ public:
           _tt(1 << 20), _tt_mask((1 << 20) - 1)
     {
         ensure_tables();
+        if (const char* e = std::getenv("SEAL_CAND_CAP"))
+            cand_cap = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_ROOT_CAP"))
+            root_cand_cap = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_DELTA_KEEP"))
+            delta_keep = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_POLICY_MODE"))
+            policy_mode = std::atoi(e);
     }
 
     // ── Pattern loading (call from wrapper after construction) ──
@@ -256,6 +279,69 @@ private:
         int o2 = (digit == 1) ? (c2 & 7) : (c2 >> 3);
         return CONJ_EMPTY_CLASSES + (digit == 2) * CONJ_OCC_RANKS
                + CANON_OCC[(o0 * 6 + o1) * 6 + o2];
+    }
+
+    // Strix-distilled ordering score for placing on empty (q, r). Tables
+    // are mover-relative; _wp and classes are root-relative, so opponent
+    // moves read through the color-mirror index tables. Higher = better
+    // for the side placing the stone.
+    inline double _policy_score(int q, int r, bool for_root) const {
+        int qi = q + OFF, ri = r + OFF;
+        double s = 0.0;
+        if (for_root) {
+            for (const auto& eo : _eval_offsets)
+                s += POLICY_W[_wp[eo.d_idx][qi - eo.oq][ri - eo.or_]];
+            int cls = _conj_class(qi, ri);
+            s += POLICY_C[cls >= 0 ? cls : CONJ_NUM_CLASSES];
+        } else {
+            for (const auto& eo : _eval_offsets)
+                s += POLICY_W[POLICY_MIR_W[_wp[eo.d_idx][qi - eo.oq][ri - eo.or_]]];
+            int cls = _conj_class(qi, ri);
+            s += POLICY_C[cls >= 0 ? POLICY_MIR_C[cls] : CONJ_NUM_CLASSES];
+        }
+        return s;
+    }
+
+    // Policy-ordered candidate selection with a linear-delta safety net:
+    // sort by policy (desc), cap, then force-in the top delta_keep cells by
+    // |move delta| that the cap dropped. Writes survivors into `cands`.
+    inline void _select_candidates(std::vector<Coord>& cands, int cap,
+                                   bool maximizing, bool is_a,
+                                   bool use_policy) {
+        std::vector<std::pair<double, Coord>> scored;
+        scored.reserve(cands.size());
+        if (use_policy) {
+            for (Coord c : cands)
+                scored.push_back({_policy_score(pack_q(c), pack_r(c), maximizing), c});
+        } else {
+            double sgn = maximizing ? 1.0 : -1.0;
+            for (Coord c : cands)
+                scored.push_back({_move_delta(pack_q(c), pack_r(c), is_a) * sgn, c});
+        }
+        std::sort(scored.begin(), scored.end(),
+                  [](const auto& a, const auto& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return a.second < b.second;
+        });
+        int keep = std::min(static_cast<int>(scored.size()), cap);
+        cands.clear();
+        for (int i = 0; i < keep; i++)
+            cands.push_back(scored[i].second);
+        if (delta_keep > 0 && keep < static_cast<int>(scored.size())) {
+            std::vector<std::pair<double, Coord>> tail;
+            tail.reserve(scored.size() - keep);
+            for (size_t i = keep; i < scored.size(); i++) {
+                Coord c = scored[i].second;
+                tail.push_back({std::abs(_move_delta(pack_q(c), pack_r(c), is_a)), c});
+            }
+            int extra = std::min(delta_keep, static_cast<int>(tail.size()));
+            std::partial_sort(tail.begin(), tail.begin() + extra, tail.end(),
+                              [](const auto& a, const auto& b) {
+                return a.first > b.first;
+            });
+            for (int i = 0; i < extra; i++)
+                cands.push_back(tail[i].second);
+        }
     }
 
     // The 31 cells whose conjunction class can change when (qi, ri) flips.

@@ -88,3 +88,52 @@ leader. Strix-vs-distill equal-time bench running.
 - Stage 2: distill strix SEARCH values (batched_gumbel_mcts root Q,
   and/or `solve_forcing` VCF labels for exact tactics).
 - gen1 strix-labeled data unexplored.
+
+## Diagnosis battery (why 0.93 fidelity didn't convert to wins)
+
+Value-fidelity offline metrics were the wrong comparison. Measured causes:
+1. Fidelity collapses off-distribution: pearson 0.86 (gen0) -> 0.68 on
+   strong-play (distill-vs-strix) positions; sign 0.97 -> 0.83. (DAgger data
+   needed for the value side.)
+2. ORDERING was the dominant leak: strix's chosen move is in our D2
+   candidate set 94.6% of the time, but the old linear delta ranks it
+   mean 9.2 / median 4 — 23% fall below the interior cap 15 (pruned
+   unseen), 15% below the root cap 20.
+3. Strix at FOUR sims still beats old/champion ~9:1 — knowledge >> search
+   at these scales.
+
+Basis battery (fit strix value, identical training, gen0 held-out corr):
+codes (concat->linear) 0.910 < raw (3^11 lines, no interaction) 0.924 <
+joint (current 8548 classes) 0.933 < joint+raw 0.940 < CELLNL 0.943
+(per-cell nonlinearity over summed raw line embeddings — cross-line
+interaction without enumeration; engine-viable at ~2x update cost with a
+cached per-cell pre-activation). cellnl is the value-net architecture to
+adopt next.
+
+## Policy distillation -> move ordering (the big win)
+
+PW[729]+PC[8548] tables trained with listwise KL on strix policy logits
+over D2 candidates (401k gen0 positions; mover-relative, color-mirror
+tables for opponent nodes). Ranking of strix's move on strong play:
+mean 4.4 / median 2, top-15 95.0% (old: 9.2 / 4 / 76.7%).
+
+Engine: _policy_score + _select_candidates with runtime knobs
+(SEAL_POLICY_MODE, SEAL_CAND_CAP, SEAL_ROOT_CAP, SEAL_DELTA_KEEP).
+
+Gates vs distill_frozen (same net, only ordering differs):
+| config | result |
+|--------|--------|
+| policy everywhere (mode 3), caps 15/20 | 38.5%, -81 |
+| mode 3, caps 25/30 | 48.5%, -10 |
+| mode 3 + delta safety net 6 | 28.5%, -160 |
+| policy INTERIOR only (mode 1) | 5%, -512 |
+| **policy ROOT only (mode 2)** | **91.0% (n=300), +402** |
+
+Lesson: the oracle policy is gold for CHOOSING the move at the root and
+poison for interior tree ordering — interior alpha-beta needs refutation
+ordering consistent with the ENGINE'S OWN eval (the linear delta is that
+eval's derivative). Mode 2 is the new default.
+
+Cumulative chain (head-to-head): original <- champion (+338) <- distill
+(+413) <- policy-root (+402). Policy-root vs original: 80% (+241).
+Strix benches for policy-root: running.
