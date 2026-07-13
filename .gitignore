@@ -18,3 +18,5 @@ experiments/strix/*.json
 distill_frozen/
 policyroot_frozen/
 experiments/strix/output_trunk/
+experiments/strix/human_prep/
+experiments/strix/human_targets/

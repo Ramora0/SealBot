@@ -230,3 +230,36 @@ linear 0.438 on REAL despite +338 Elo). Decision-quality metrics separate
 cleanly: regret strixpol 0.043 << distill 0.114 << tables 0.202 << delta
 0.326 (p90 0.900!). Even on decisive pairs (|d|>0.5) distill misorders 12%.
 Full n=300 run after trunk lands.
+
+## Trunk v1 trained + full metric battery (n=300 x REAL/PERT/HUMAN)
+
+Trunk v1 (12 ep, 393k): value corr .9621/spearman .9542; policy top1 .515
+mrank 3.11 — beats BOTH solo baselines on their own metrics.
+
+Battery (strix child-value oracle over all D2 children, human_recs.pkl
+= 600 KrakenBot human positions added as third set):
+
+VERDICT — the old metric is officially non-discriminating: trunk value
+head hits posval_spearman .90 (best ever, distill .79) yet is EQUAL or
+WORSE than distill on sibling discrimination and decision regret (REAL
+regret .175 tie; PERT .115 vs .083; HUMAN .254 vs .206). Absolute value
+fidelity != move choice quality. Gate on sib_close + regret from now on.
+
+THE REAL PROBLEM (user's q: why nowhere near strix ordering): close-call
+resolution. regret/decision: strixpol .026-.057, our best ~.17-.25
+(5-7x); sib_close strixpol .82-.85, ours .73-.78. Compounded over ~25
+decisions/game this is the -450. Pointwise Huber never trains sibling
+contrasts — posval rose .79->.90 while sib_close stayed flat.
+
+Other findings: champion regret_p90 = 1.01 (the far-move blunder tail,
+task 13, now quantified); delta as selector is catastrophic (.44-.48
+regret) confirming it's only a wedge-filler; ptrunk ~ tables at ranking
+despite way more capacity -> policy head needs GLOBAL context (currently
+pure cell-local readout), add clamp(acc) input in v1.1.
+
+Caveat: strixpol's tiny regret partly reflects policy/value co-training
+self-consistency; still the right ceiling reference.
+
+v1.1 plan: global-context policy head + pairwise logistic sibling loss on
+strix child values (|dOracle|-weighted) + 580k human positions (labeled
+via single-pass value+policy, human_extract.py).

@@ -166,6 +166,10 @@ def main():
 
     sets = {"REAL": recs[:args.n],
             "PERT": make_perturbed(recs[args.n:args.n * 2])}
+    human_pkl = SCRIPT_DIR / "human_recs.pkl"
+    if human_pkl.exists():
+        with open(human_pkl, "rb") as fh:
+            sets["HUMAN"] = pickle.load(fh)[:args.n]
 
     results = {}
     for set_name, base_set in sets.items():

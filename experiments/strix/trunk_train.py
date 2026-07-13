@@ -91,11 +91,13 @@ def _key(cells, mover, ml, mc):
 def _shard(paths):
     npz_path, pkl_path = paths
     vals = {}
-    for g in pickle.load(open(pkl_path, "rb")):
-        for p in g["positions"]:
-            vals[_key(p["cells"], p["mover"], p["moves_left"],
-                      p["move_count"])] = p["score"] / 1000.0
+    if pkl_path is not None:
+        for g in pickle.load(open(pkl_path, "rb")):
+            for p in g["positions"]:
+                vals[_key(p["cells"], p["mover"], p["moves_left"],
+                          p["move_count"])] = p["score"] / 1000.0
     d = np.load(npz_path, allow_pickle=True)
+    inline_val = d["val"] if "val" in d.files else None
     lens, cq, cr, lg = d["lens"], d["cell_q"], d["cell_r"], d["logit"]
     metas = d["meta"]
     offs = np.zeros(len(lens) + 1, dtype=np.int64)
@@ -104,7 +106,10 @@ def _shard(paths):
     tgt, mcs, mls = [], [], []
     miss = 0
     for i, (cells, mover, ml, mc) in enumerate(metas):
-        t = vals.get(_key(cells, mover, ml, mc))
+        if inline_val is not None:
+            t = float(inline_val[i]) * 8.0
+        else:
+            t = vals.get(_key(cells, mover, ml, mc))
         if t is None:
             miss += 1
             continue
@@ -124,7 +129,7 @@ def _shard(paths):
             np.array(mls, np.int32), miss)
 
 
-def build(cache, workers, max_shards=None):
+def build(cache, workers, max_shards=None, human=False):
     if os.path.exists(cache):
         d = np.load(cache)
         return {k: d[k] for k in d.files}
@@ -134,6 +139,10 @@ def build(cache, workers, max_shards=None):
         pkl = os.path.join(DATA, os.path.basename(npz).replace(".npz", ".pkl"))
         if os.path.exists(pkl):
             pairs.append((npz, pkl))
+    if human:
+        for npz in sorted(glob.glob(os.path.join(SCRIPT_DIR, "human_targets",
+                                                 "*.npz"))):
+            pairs.append((npz, None))
     if max_shards:
         pairs = pairs[:max_shards]
     print(f"building joint dataset from {len(pairs)} shards...", flush=True)
@@ -232,6 +241,8 @@ def main():
                     else "cpu")
     ap.add_argument("--max-shards", type=int, default=None)
     ap.add_argument("--out", default="output_trunk")
+    ap.add_argument("--human", action="store_true",
+                    help="include human_targets/ shards (inline strix vals)")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads)
@@ -239,7 +250,7 @@ def main():
     out_dir = os.path.join(SCRIPT_DIR, args.out)
     os.makedirs(out_dir, exist_ok=True)
     ds = build(os.path.join(out_dir, "trunk_ds.npz"), args.threads,
-               args.max_shards)
+               args.max_shards, human=args.human)
 
     n = len(ds["tgt"])
     coffs, woffs, poffs = ds["coffs"], ds["woffs"], ds["poffs"]
