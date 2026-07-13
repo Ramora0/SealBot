@@ -109,7 +109,7 @@ class Trunk2(nn.Module):
         nn.init.normal_(self.ew.weight, 0.0, 0.03)
         self.w1 = nn.Linear(K + 2, H)
         self.w2 = nn.Linear(H, 1)
-        self.p1 = nn.Linear(2 * K, HP)
+        self.p1 = nn.Linear(2 * K + 2, HP)
         self.p2 = nn.Linear(HP, 1)
 
     def cell_act(self, trip):
@@ -129,11 +129,15 @@ class Trunk2(nn.Module):
         return self.value_from_acc(self.accum(trip, seg, npos, wi, wc, woff),
                                    g0, g1)
 
-    def policy(self, cand_trip, acc, seg_p):
+    def policy(self, cand_trip, acc, seg_p, g0, g1):
+        """g0/g1 (move_count, moves_left scalars) per POSITION, gathered by
+        seg_p — the cell's worth depends on stones-in-hand (a lone stone
+        can't afford attack when two blocks are needed)."""
         a = self.cell_act(cand_trip)
         ctx = torch.clamp(acc, 0.0, CLIP)[seg_p]
-        return self.p2(torch.relu(self.p1(torch.cat([a, ctx],
-                                                    dim=1)))).squeeze(1)
+        return self.p2(torch.relu(self.p1(torch.cat(
+            [a, ctx, g0[seg_p].unsqueeze(1), g1[seg_p].unsqueeze(1)],
+            dim=1)))).squeeze(1)
 
 
 # ── training ────────────────────────────────────────────────────────────
@@ -283,7 +287,8 @@ def main():
             opt.zero_grad()
             acc = model.accum(bt, seg_c, npos, bwi, bwc, bwo)
             lv = huber(model.value_from_acc(acc, bg0, bg1), by)
-            lp = seg_ce(model.policy(bct, acc, seg_p), btl, seg_p, npos, dev)
+            lp = seg_ce(model.policy(bct, acc, seg_p, bg0, bg1), btl, seg_p,
+                        npos, dev)
             sv = model.value(*sfeat)
             lc = contrast_loss(sv * sbflip, ii, jj, sgn, wt)
             le = huber(sv, sby)
@@ -302,7 +307,7 @@ def main():
                 acc = model.accum(bt, seg_c, npos, bwi, bwc, bwo)
                 preds.append(model.value_from_acc(acc, bg0, bg1)
                              .cpu().numpy())
-                sc = model.policy(bct, acc, seg_p).cpu().numpy()
+                sc = model.policy(bct, acc, seg_p, bg0, bg1).cpu().numpy()
                 tl = btl.cpu().numpy()
                 off = 0
                 for L in (poffs[ids + 1] - poffs[ids]):

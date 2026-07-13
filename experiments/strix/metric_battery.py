@@ -122,7 +122,7 @@ class TrunkScorer:
         with torch.no_grad():
             t = torch.from_numpy(cand_trip.astype(np.int64)).to(self.dev)
             if self.arch == "v2":
-                trip, wi, wc = parent
+                trip, wi, wc, mc, ml = parent
                 acc = self.m.accum(
                     torch.from_numpy(trip.astype(np.int64)).to(self.dev),
                     torch.zeros(len(trip), dtype=torch.int64,
@@ -133,7 +133,11 @@ class TrunkScorer:
                     torch.tensor([0, len(wi)], device=self.dev))
                 seg_p = torch.zeros(len(cand_trip), dtype=torch.int64,
                                     device=self.dev)
-                return self.m.policy(t, acc, seg_p).cpu().numpy()
+                g0 = torch.tensor([mc * 0.02], dtype=torch.float32,
+                                  device=self.dev)
+                g1 = torch.tensor([ml * 0.5], dtype=torch.float32,
+                                  device=self.dev)
+                return self.m.policy(t, acc, seg_p, g0, g1).cpu().numpy()
             return self.m.policy(t).cpu().numpy()
 
 
@@ -309,7 +313,7 @@ def main():
                 ptrip, pwi, pwc, ctrip = trunk_train.extract(
                     [tuple(c) for c in cells], mover, kept)
                 pol_scores["ptrunk"][kidx] = trunk.policy_many(
-                    ctrip, parent=(ptrip, pwi, pwc))
+                    ctrip, parent=(ptrip, pwi, pwc, mc, ml))
             # strix logits: translate coords if the bridge translated
             owner = {(q, r): p for q, r, p in cells}
             if owner.get((0, 0)) != 1:
