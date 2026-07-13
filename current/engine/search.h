@@ -536,11 +536,21 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
             turns = {{cands[0], cands[0]}};
         } else {
             // Strix-distilled policy selection + linear-delta safety net —
-            // deterministic and independent of history heuristic.
+            // deterministic and independent of history heuristic. Bit 0
+            // governs our-side interior selection, bit 3 the opponent's.
             bool is_a = (_cur_player == P_A);
             int cap = no_cand_cap ? static_cast<int>(cands.size()) : cand_cap;
-            _select_candidates(cands, cap, maximizing, is_a,
-                               (policy_mode & 1) != 0);
+            bool use_pol = maximizing ? (policy_mode & 1) != 0
+                                      : (policy_mode & 8) != 0;
+            // bit 4: at opponent (min) nodes, widen the delta selection
+            // with top policy extras (delta_keep) — union, never replace.
+            int saved_keep = delta_keep;
+            if (!maximizing && !use_pol && !(policy_mode & 16))
+                delta_keep = 0;
+            if (maximizing && !use_pol)
+                delta_keep = 0;
+            _select_candidates(cands, cap, maximizing, is_a, use_pol);
+            delta_keep = saved_keep;
 
             int n = static_cast<int>(cands.size());
             if (no_cand_cap) {

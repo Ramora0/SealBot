@@ -31,6 +31,19 @@ Results:
 Key lesson: offline agreement with a search teacher's labels is NOT the decisive
 metric — the engine supplies tactics; long-horizon value quality wins games.
 
-Open: handicap ladder (strix sims 16/4) for resolution; mixdeep (strix+deep mix)
-net; blend sweep; stage-2 distill of strix SEARCH values (batched_gumbel_mcts,
-solve_forcing VCF labels); gen1_strix data unused.
+POLICY-ROOT breakthrough (later same day): strix policy distilled into
+PW[729]+PC[8548] ordering tables (listwise KL over D2 candidates). Used at the
+ROOT ONLY = +402 Elo over the distill leader (91%, n=300); used at interior
+nodes = −512. Lesson: oracle policy chooses moves; interior alpha-beta ordering
+must stay consistent with the engine's own eval (linear delta). Engine knobs:
+SEAL_POLICY_MODE (2=root-only default), SEAL_CAND_CAP/ROOT_CAP/DELTA_KEEP.
+Diagnosis that led there: 23% of strix's moves fell below the interior cap
+under old ordering; value fidelity collapses off-distribution (0.86→0.68).
+Basis battery: cellnl (per-cell elementwise NL over summed raw 3^11 line
+embeddings, no codebook) is the best value basis (0.943) — next value net.
+Mixdeep (avg of strix+deep targets) was a hard failure (−552 vs distill):
+never average incompatible teachers; override selectively (VCF ±8) instead.
+
+Open: cellnl engine adoption; DAgger value data from strong play; VCF label
+overrides; root-cap sweep at mode 2; search-value (root Q) distillation;
+gen1_strix data unused.

@@ -137,3 +137,33 @@ eval's derivative). Mode 2 is the new default.
 Cumulative chain (head-to-head): original <- champion (+338) <- distill
 (+413) <- policy-root (+402). Policy-root vs original: 80% (+241).
 Strix benches for policy-root: running.
+
+## -512 investigation (root-caused, not a bug)
+
+Eliminated: color-mirror path (identities verified exact over 67k windows /
+3.6k classes: MIRROR729[root-rel] == mover-rel, same for CLASS_MIRROR);
+refactor regressions (mode-0 sanity = parity; mode-2 reproduces +323..+402).
+
+Bisection of WHERE policy selection runs (gates vs distill_frozen):
+| config | Elo |
+|--------|-----|
+| threat/qsearch only (bit2) | +35 (ns) |
+| OUR-side interior only (bit0) | +67 (ns) |
+| OPPONENT-side interior only (bit3) | **-512** |
+| root + ours + threat (mode 7) | +83 (interference) |
+| root + min-node UNION (+5 policy extras) | +16 (breadth cost) |
+| **root only (mode 2)** | **+402 (n=300), +323 repro** |
+
+Cause: minimax pruning asymmetry. Dropping one of OUR alternatives is
+merely suboptimal; dropping one of the OPPONENT'S refutations makes the
+backed-up value unsoundly optimistic, and any miss-rate compounds per
+min-node. A 95%-recall policy is superb for CHOOSING moves and fatal as a
+filter on enemy replies. The linear delta survives at min-nodes because
+forcing replies always carry huge window deltas (~100% recall exactly on
+refutations). Union-widening loses its soundness gain to breadth cost.
+
+The delta cannot be killed inside the tree until the VALUE eval understands
+the positions strix-like replies create (fidelity 0.68 off-distribution) —
+prerequisite: cellnl + DAgger value net; then revisit.
+
+Ship config: SEAL_POLICY_MODE=2 (default), snapshotted policyroot_frozen/.

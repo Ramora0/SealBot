@@ -165,7 +165,7 @@ inline std::vector<Turn> MinimaxBot::_generate_threat_turns(
     bool maximizing = (_cur_player == _player);
 
     bool is_a = (_cur_player == P_A);
-    bool use_pol = (policy_mode & 1) != 0;
+    bool use_pol = (policy_mode & 4) != 0;
     double sgn = maximizing ? 1.0 : -1.0;
     auto cell_score = [&](Coord c) {
         return use_pol ? _policy_score(pack_q(c), pack_r(c), maximizing)

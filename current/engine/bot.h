@@ -34,9 +34,10 @@ public:
     // the candidate set even when the policy ranks them below the cap
     // (policy tail can drop forced blocks). SEAL_DELTA_KEEP overrides.
     int    delta_keep    = 0;
-    // Ordering source: bit 0 = policy at interior nodes, bit 1 = policy at
-    // root. Default 2 (policy chooses at the root, delta orders the tree) —
-    // bisect showed +315 for root-only vs -512 interior. SEAL_POLICY_MODE.
+    // Ordering source bits: 0 = interior candidate selection, 1 = root
+    // selection, 2 = threat/qsearch turn ordering + companion. Default 2
+    // (policy at root only; +402 there, catastrophic elsewhere — cause
+    // under investigation). SEAL_POLICY_MODE overrides.
     int    policy_mode   = 2;
     double time_limit;
     int    last_depth  = 0;
@@ -328,11 +329,17 @@ private:
         for (int i = 0; i < keep; i++)
             cands.push_back(scored[i].second);
         if (delta_keep > 0 && keep < static_cast<int>(scored.size())) {
+            // Append top delta_keep dropped cells by the OTHER scorer:
+            // tactical |delta| when policy selected, policy score when
+            // delta selected (union widening — adds coverage, never drops).
             std::vector<std::pair<double, Coord>> tail;
             tail.reserve(scored.size() - keep);
             for (size_t i = keep; i < scored.size(); i++) {
                 Coord c = scored[i].second;
-                tail.push_back({std::abs(_move_delta(pack_q(c), pack_r(c), is_a)), c});
+                double s = use_policy
+                    ? std::abs(_move_delta(pack_q(c), pack_r(c), is_a))
+                    : _policy_score(pack_q(c), pack_r(c), maximizing);
+                tail.push_back({s, c});
             }
             int extra = std::min(delta_keep, static_cast<int>(tail.size()));
             std::partial_sort(tail.begin(), tail.begin() + extra, tail.end(),
