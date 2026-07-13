@@ -17,3 +17,4 @@ experiments/strix/*.log
 experiments/strix/*.json
 distill_frozen/
 policyroot_frozen/
+experiments/strix/output_trunk/

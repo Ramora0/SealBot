@@ -194,3 +194,39 @@ distill_frozen across 4 independent gates. Threat-first partition kept in
 _select_candidates for any future interior-policy use.
 Also: runtime caps > 15 are silently ignored at interior nodes
 (g_inner_pairs is compile-time) — earlier interior-cap sweep entries void.
+
+## Final strix bench (mode 74) + s16 oddity
+
+Equal-time vs strix, mode 74 default build: 10/150 (6.7%, gap -451),
+statistically identical to root-only's 11/150. Full ladder: original 0/150
+-> champion 2/150 -> distill 3/150 -> policy builds 10-11/150.
+Distill s16 rerun died at 40 games but 13/40 (32.5%) confirms the oddity
+directionally (distill > policy builds vs handicapped strix).
+
+## Trunk v1: permanent value+policy merge (user directive)
+
+trunk_train.py: ONE cellnl trunk (E_raw[3^11] x K=32 summed over 3 dirs,
+cell-level clamp NL) with TWO heads: value (clamp(sum cells + EW bag) ++
+globals -> 32 relu -> 1, as battery winner) and policy (P2 relu(P1 a_c) on
+the SAME per-cell activation, readout at candidate cells). Joint loss:
+Huber(strix_v*8) + listwise KL(strix logits over D2 cands). Data = per-shard
+join gen0_strix x policy_targets = 393k positions with both labels.
+GPU (hexo venv), ~116s/epoch. After 2/12 epochs: val corr 0.9406 /
+spearman 0.9329 (cellnl solo: 0.9428/0.9356) AND policy top1 0.486 /
+mrank 3.32 (tables: 0.460/4.05) — joint beats both solo baselines; no
+multi-task interference.
+
+## metric_battery.py: finding the metric that matters
+
+Ground truth = strix value of EVERY child (one stone on each D2 candidate)
+of each base position, base-mover POV. Scorers ranked by: posval spearman
+(old style), sibling pairwise accuracy (all/close/decisive), top1, decision
+regret (tanh units), forced-block-in-top-3. Known Elo ladder (linear <
+champion < distill) is the validity check for each metric; strixpol =
+strix's own policy as ordering ceiling.
+
+Smoke (n=20): old posval spearman FAILS the ladder check (champion 0.165 <
+linear 0.438 on REAL despite +338 Elo). Decision-quality metrics separate
+cleanly: regret strixpol 0.043 << distill 0.114 << tables 0.202 << delta
+0.326 (p90 0.900!). Even on decisive pairs (|d|>0.5) distill misorders 12%.
+Full n=300 run after trunk lands.
