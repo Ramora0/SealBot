@@ -11,3 +11,7 @@ CLAUDE.md
 scratch.txt
 experiments/nnue/data/
 experiments/nnue/output/
+champion_frozen/
+experiments/nnue/output_*.log
+experiments/strix/*.log
+experiments/strix/*.json

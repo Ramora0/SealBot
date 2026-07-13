@@ -327,10 +327,10 @@ def _request_move(proc, game, time_limit):
 
 
 def _play_one_cross(root_dir, python_exe, time_limit, game_idx,
-                    win_length, max_moves):
+                    win_length, max_moves, opp_dir="best"):
     swapped = game_idx % 2 == 1
     current_dir = os.path.join(root_dir, "current")
-    best_dir = os.path.join(root_dir, "best")
+    best_dir = os.path.join(root_dir, opp_dir)
 
     proc_cur = _start_bot_server(python_exe, current_dir, root_dir, time_limit)
     proc_best = _start_bot_server(python_exe, best_dir, root_dir, time_limit)
@@ -419,12 +419,12 @@ def _play_one_cross(root_dir, python_exe, time_limit, game_idx,
 # ── Main evaluate ──
 
 def evaluate(num_games=20, win_length=6, time_limit=0.1, use_tqdm=True,
-             max_moves=None, mode="best"):
+             max_moves=None, mode="best", opp_dir="best"):
     if max_moves is None:
         max_moves = MAX_MOVES_PER_GAME
 
     name_a = "current"
-    name_b = {"best": "best", "random": "random", "self": "current_B"}[mode]
+    name_b = {"best": opp_dir, "random": "random", "self": "current_B"}[mode]
 
     bot_a_wins = bot_b_wins = draws = games_played = 0
     bot_a_violations = bot_b_violations = aborted_games = 0
@@ -479,7 +479,8 @@ def evaluate(num_games=20, win_length=6, time_limit=0.1, use_tqdm=True,
         from concurrent.futures import ProcessPoolExecutor, as_completed
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(_play_one_cross, ROOT, python_exe,
-                                       time_limit, i, win_length, max_moves)
+                                       time_limit, i, win_length, max_moves,
+                                       opp_dir)
                        for i in range(num_games)]
             it = as_completed(futures)
             if use_tqdm:
@@ -552,6 +553,8 @@ if __name__ == "__main__":
                         help="current vs itself")
     parser.add_argument("--no-tqdm", action="store_true",
                         help="Disable progress bar")
+    parser.add_argument("--opp-dir", type=str, default="best",
+                        help="Opponent build dir name (default: best)")
     parsed = parser.parse_args()
 
     if parsed.random:
@@ -560,11 +563,12 @@ if __name__ == "__main__":
         mode = "self"
     else:
         mode = "best"
-        for d, label in [(CURRENT_DIR, "current"), (BEST_DIR, "best")]:
+        opp = os.path.join(ROOT, parsed.opp_dir)
+        for d, label in [(CURRENT_DIR, "current"), (opp, parsed.opp_dir)]:
             if _find_so(d) is None:
                 print(f"Error: no minimax_cpp .so in {d}/")
                 print(f"  Run: make build")
                 sys.exit(1)
 
     evaluate(num_games=parsed.num_games, time_limit=parsed.time_limit,
-             use_tqdm=not parsed.no_tqdm, mode=mode)
+             use_tqdm=not parsed.no_tqdm, mode=mode, opp_dir=parsed.opp_dir)

@@ -40,10 +40,16 @@ WIN_SCORE_MIN = 1e6      # anything above this is a mate score
 
 # ── Dataset build: shards -> packed sparse feature arrays ──────────────────
 
+def _clamp_score(sc):
+    if abs(sc) > WIN_SCORE_MIN:
+        sc = np.sign(sc) * SCORE_CLAMP
+    return float(np.clip(sc, -SCORE_CLAMP, SCORE_CLAMP))
+
+
 def _process_shard(sp):
     from features import extract_features as ef
     feat_idx, feat_cnt, lens = [], [], []
-    scores, outs, mcs, mls = [], [], [], []
+    scores, sdeeps, outs, mcs, mls = [], [], [], [], []
     with open(sp, "rb") as f:
         games = pickle.load(f)
     for g in games:
@@ -56,10 +62,8 @@ def _process_shard(sp):
             feat_idx.append(fi.astype(np.int32))
             feat_cnt.append(fc.astype(np.int16))
             lens.append(len(fi))
-            sc = pos["score"]
-            if abs(sc) > WIN_SCORE_MIN:
-                sc = np.sign(sc) * SCORE_CLAMP
-            scores.append(float(np.clip(sc, -SCORE_CLAMP, SCORE_CLAMP)))
+            scores.append(_clamp_score(pos["score"]))
+            sdeeps.append(_clamp_score(pos.get("score_deep", pos["score"])))
             outs.append(0.5 if winner == 0 else
                         (1.0 if winner == mover else 0.0))
             mcs.append(pos["move_count"])
@@ -69,6 +73,7 @@ def _process_shard(sp):
     return (np.concatenate(feat_idx), np.concatenate(feat_cnt),
             np.array(lens, dtype=np.int64),
             np.array(scores, dtype=np.float32),
+            np.array(sdeeps, dtype=np.float32),
             np.array(outs, dtype=np.float32),
             np.array(mcs, dtype=np.int32),
             np.array(mls, dtype=np.int32))
@@ -86,15 +91,16 @@ def build_dataset(data_dir, cache_path, max_positions=None, workers=16):
     t0 = time.time()
 
     fis, fcs, lens_all = [], [], []
-    scores, outs, mcs, mls = [], [], [], []
+    scores, sdeeps, outs, mcs, mls = [], [], [], [], []
     n_pos = 0
     with mp.Pool(workers) as pool:
         for i, res in enumerate(pool.imap(_process_shard, shards)):
             if res is None:
                 continue
-            fi, fc, lens, sc, ou, mc, ml = res
+            fi, fc, lens, sc, sd, ou, mc, ml = res
             fis.append(fi); fcs.append(fc); lens_all.append(lens)
-            scores.append(sc); outs.append(ou); mcs.append(mc); mls.append(ml)
+            scores.append(sc); sdeeps.append(sd); outs.append(ou)
+            mcs.append(mc); mls.append(ml)
             n_pos += len(lens)
             if (i + 1) % 40 == 0:
                 print(f"  {i+1}/{len(shards)} shards, {n_pos} positions, "
@@ -111,6 +117,7 @@ def build_dataset(data_dir, cache_path, max_positions=None, workers=16):
         "feat_cnt": np.concatenate(fcs),
         "offsets": offsets,
         "score": np.concatenate(scores),
+        "score_deep": np.concatenate(sdeeps),
         "outcome": np.concatenate(outs),
         "move_count": np.concatenate(mcs),
         "moves_left": np.concatenate(mls),
@@ -146,9 +153,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=str, default="data/gen0")
     ap.add_argument("--out", type=str, default="output/gen0")
-    ap.add_argument("--loss", choices=["wdl", "score"], default="wdl",
+    ap.add_argument("--loss", choices=["wdl", "score", "mixdeep"], default="wdl",
                     help="wdl: BCE on blended win-prob; score: Huber "
-                         "regression on search score (keeps resolution)")
+                         "regression on search score (keeps resolution); "
+                         "mixdeep: lam*score + (1-lam)*score_deep, both /1000")
     ap.add_argument("--lam", type=float, default=0.7)
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=8192)
@@ -176,6 +184,16 @@ def main():
         target = (args.lam * t_score
                   + (1.0 - args.lam) * ds["outcome"]).astype(np.float32)
         out_scale = 600.0
+    elif args.loss == "mixdeep":
+        if "score_deep" not in ds:
+            raise SystemExit("mixdeep needs a dataset built with score_deep "
+                             "(rebuild cache from strix-relabeled shards)")
+        target = (args.lam * ds["score"] / 1000.0
+                  + (1.0 - args.lam) * ds["score_deep"] / 1000.0
+                  ).astype(np.float32)
+        out_scale = 1000.0
+        print(f"mixdeep targets: mean {target.mean():.2f} "
+              f"std {target.std():.2f}")
     else:
         # regression target: score in units of 1000, outcome as +-8 anchor
         t_out = (ds["outcome"] * 2.0 - 1.0) * 8.0
