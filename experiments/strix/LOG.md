@@ -304,3 +304,26 @@ Latent quirk: PATTERN_VALUES for completed-6 windows ~untrained (-56)
 child scoring walks into it (linear ranks the winning move ~last).
 
 v1.1 chain running: fixed sibling regen -> trunk_train2 --human.
+
+## Trunk v1.1 battery: gate passed decisively — the loss WAS the problem
+
+v1.1 = contrastive sibling loss (corrected terminals) + global-context
+ml-aware policy head + 580k human positions. Battery (dedup'd bases,
+per-ml split; REAL is fully out-of-sample; HUMAN bases partially overlap
+pointwise/sibling training samples — same games — so read REAL first):
+
+value/trunk v1.1 REAL: regret .052 (v1 .175, distill .248, linear .277)
+  by class: ml1 .033 (linear .567), ml2 .061 (linear .127)
+  -> beats linear on BOTH classes incl. its home turf; gate was "approach
+  .121", result .061. Gap to strixpol ceiling (.025): now ~2x, was 5-7x.
+  sib_close .766 REAL / .820 HUMAN; sib_dec .973/.987; posval .92/.96
+  (contrastive training IMPROVED calibration, cost nothing).
+HUMAN: trunk .071 vs linear .179 / distill .206. PERT: .066 vs .111/.100.
+policy/ptrunk v1.1: REAL regret .132 (tables .218), ml2 .053; HUMAN .081
+  (tables .191); PERT top1 .550 (strixpol .607). Halved vs v1.
+Audit mechanism confirmed end-to-end: Huber-only nets lose lexicographic
+must-block argmaxes; |dOracle|-weighted pairwise logistic manufactures
+exactly those margins. "Why isn't it better than linear" is resolved.
+
+Next: engine port of trunk v1.1 (both heads), then head-to-head + strix.
+Offline wins have fooled us before — play is the only real gate.
