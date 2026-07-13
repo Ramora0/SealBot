@@ -225,6 +225,8 @@ inline void MinimaxBot::_load_position(const GameState& gs) {
         _board_cells.push_back(pack(cell.q, cell.r));
     }
     _player     = gs.cur_player;
+    _cur_player = gs.cur_player;
+    _moves_left = gs.moves_left;
     _move_count = gs.move_count;
     if (_player == P_A) { _cell_a = 1; _cell_b = 2; }
     else                { _cell_a = 2; _cell_b = 1; }

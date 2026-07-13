@@ -75,8 +75,9 @@ def main():
         n_feat += 1
 
         ev_engine = bot.eval_position(game)
+        tempo = game.moves_left_in_turn * 0.5   # root is the mover here
         ev_numpy = net_forward(w_idx, w_cnt, c_idx, c_cnt,
-                               game.move_count, net)
+                               game.move_count, tempo, net)
         d = abs(ev_engine - ev_numpy) / max(1.0, abs(ev_numpy))
         worst_eval = max(worst_eval, d)
         n_eval += 1

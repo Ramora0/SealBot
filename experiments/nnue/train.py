@@ -34,7 +34,6 @@ from features import extract_features, MIRROR729, CLASS_MIRROR, NUM_CLASSES
 K, H = 32, 32
 CLIP = 8.0
 OUT_SCALE = 600.0
-SCORE_SCALE = 4000.0     # search-score -> win-prob squash
 SCORE_CLAMP = 30000.0    # tame mate scores
 WIN_SCORE_MIN = 1e6      # anything above this is a mate score
 
@@ -44,7 +43,7 @@ WIN_SCORE_MIN = 1e6      # anything above this is a mate score
 def _process_shard(sp):
     from features import extract_features as ef
     feat_idx, feat_cnt, lens = [], [], []
-    scores, outs, mcs = [], [], []
+    scores, outs, mcs, mls = [], [], [], []
     with open(sp, "rb") as f:
         games = pickle.load(f)
     for g in games:
@@ -64,13 +63,15 @@ def _process_shard(sp):
             outs.append(0.5 if winner == 0 else
                         (1.0 if winner == mover else 0.0))
             mcs.append(pos["move_count"])
+            mls.append(pos.get("moves_left", 2))
     if not lens:
         return None
     return (np.concatenate(feat_idx), np.concatenate(feat_cnt),
             np.array(lens, dtype=np.int64),
             np.array(scores, dtype=np.float32),
             np.array(outs, dtype=np.float32),
-            np.array(mcs, dtype=np.int32))
+            np.array(mcs, dtype=np.int32),
+            np.array(mls, dtype=np.int32))
 
 
 def build_dataset(data_dir, cache_path, max_positions=None, workers=16):
@@ -85,15 +86,15 @@ def build_dataset(data_dir, cache_path, max_positions=None, workers=16):
     t0 = time.time()
 
     fis, fcs, lens_all = [], [], []
-    scores, outs, mcs = [], [], []
+    scores, outs, mcs, mls = [], [], [], []
     n_pos = 0
     with mp.Pool(workers) as pool:
         for i, res in enumerate(pool.imap(_process_shard, shards)):
             if res is None:
                 continue
-            fi, fc, lens, sc, ou, mc = res
+            fi, fc, lens, sc, ou, mc, ml = res
             fis.append(fi); fcs.append(fc); lens_all.append(lens)
-            scores.append(sc); outs.append(ou); mcs.append(mc)
+            scores.append(sc); outs.append(ou); mcs.append(mc); mls.append(ml)
             n_pos += len(lens)
             if (i + 1) % 40 == 0:
                 print(f"  {i+1}/{len(shards)} shards, {n_pos} positions, "
@@ -112,6 +113,7 @@ def build_dataset(data_dir, cache_path, max_positions=None, workers=16):
         "score": np.concatenate(scores),
         "outcome": np.concatenate(outs),
         "move_count": np.concatenate(mcs),
+        "moves_left": np.concatenate(mls),
     }
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     np.savez(cache_path, **ds)
@@ -130,13 +132,13 @@ class SealNNUE(nn.Module):
         nn.init.normal_(self.emb.weight, 0.0, 0.05)
         with torch.no_grad():
             self.emb.weight[0].zero_()  # window pattern 0 never occurs; keep 0
-        self.w1 = nn.Linear(K + 1, H)
+        self.w1 = nn.Linear(K + 2, H)   # + [move_count*0.02, tempo]
         self.w2 = nn.Linear(H, 1)
 
-    def forward(self, idx, cnt, offsets, g0):
+    def forward(self, idx, cnt, offsets, g0, g1):
         acc = self.emb(idx, offsets, per_sample_weights=cnt)
         h = torch.clamp(acc, 0.0, CLIP)
-        x = torch.cat([h, g0.unsqueeze(1)], dim=1)
+        x = torch.cat([h, g0.unsqueeze(1), g1.unsqueeze(1)], dim=1)
         return self.w2(torch.relu(self.w1(x))).squeeze(1)
 
 
@@ -144,10 +146,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=str, default="data/gen0")
     ap.add_argument("--out", type=str, default="output/gen0")
-    ap.add_argument("--lam", type=float, default=0.6)
-    ap.add_argument("--epochs", type=int, default=12)
+    ap.add_argument("--lam", type=float, default=0.7)
+    ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=8192)
-    ap.add_argument("--lr", type=float, default=1.5e-3)
+    ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--max-positions", type=int, default=None)
     ap.add_argument("--val-frac", type=float, default=0.03)
     ap.add_argument("--threads", type=int, default=16)
@@ -158,15 +160,21 @@ def main():
     out_dir = os.path.join(SCRIPT_DIR, args.out)
     os.makedirs(out_dir, exist_ok=True)
 
-    ds = build_dataset(data_dir, os.path.join(out_dir, "dataset.npz"),
+    ds = build_dataset(data_dir, os.path.join(out_dir, "dataset_v2.npz"),
                        args.max_positions)
     n = len(ds["score"])
 
+    # score->prob squash scaled so ~75% of nonzero scores stay unsaturated
+    score_scale = float(np.quantile(np.abs(ds["score"]), 0.75)) / 2.0
+    score_scale = max(score_scale, 500.0)
+    print(f"SCORE_SCALE = {score_scale:.0f} (data-driven)")
+
     # targets in win-prob space (mover perspective)
-    t_score = 1.0 / (1.0 + np.exp(-ds["score"] / SCORE_SCALE))
+    t_score = 1.0 / (1.0 + np.exp(-ds["score"] / score_scale))
     target = (args.lam * t_score
               + (1.0 - args.lam) * ds["outcome"]).astype(np.float32)
     g0 = (ds["move_count"] * 0.02).astype(np.float32)
+    g1 = (ds["moves_left"] * 0.5).astype(np.float32)  # root always to move
 
     # mirror-permutation for augmentation over the merged feature space
     perm = np.concatenate([MIRROR729, CLASS_MIRROR + 729]).astype(np.int64)
@@ -182,6 +190,7 @@ def main():
     fcnt = torch.from_numpy(ds["feat_cnt"].astype(np.float32))
     tgt = torch.from_numpy(target)
     g0_t = torch.from_numpy(g0)
+    g1_t = torch.from_numpy(g1)
 
     def gather_batch(ids, mirror=False):
         lens = offsets[ids + 1] - offsets[ids]
@@ -192,14 +201,19 @@ def main():
         bi = fidx[gather]
         bc = fcnt[gather]
         bt = tgt[ids]
-        bg = g0_t[ids]
+        bg0 = g0_t[ids]
+        bg1 = g1_t[ids]
         if mirror:
+            # color swap: root becomes the non-mover -> tempo negates
             bi = perm_t[bi]
             bt = 1.0 - bt
-        return bi, bc, torch.from_numpy(bo), bg, bt
+            bg1 = -bg1
+        return bi, bc, torch.from_numpy(bo), bg0, bg1, bt
 
     model = SealNNUE()
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=args.epochs, eta_min=args.lr * 0.02)
     bce = nn.BCEWithLogitsLoss()
 
     print(f"training: {len(train_ids)} train / {n_val} val, "
@@ -214,14 +228,15 @@ def main():
         for s in range(0, len(train_ids), args.batch):
             ids = train_ids[s:s + args.batch]
             mirror = (n_batches % 2 == 1)   # alternate color-mirrored batches
-            bi, bc, bo, bg, bt = gather_batch(ids, mirror=mirror)
+            bi, bc, bo, bg0, bg1, bt = gather_batch(ids, mirror=mirror)
             opt.zero_grad()
-            logit = model(bi, bc, bo, bg)
+            logit = model(bi, bc, bo, bg0, bg1)
             loss = bce(logit, bt)
             loss.backward()
             opt.step()
-            tot_loss += float(loss)
+            tot_loss += float(loss.detach())
             n_batches += 1
+        sched.step()
 
         model.eval()
         with torch.no_grad():
@@ -229,8 +244,8 @@ def main():
             nb = 0
             for s in range(0, len(val_ids), args.batch):
                 ids = val_ids[s:s + args.batch]
-                bi, bc, bo, bg, bt = gather_batch(ids)
-                vl += float(bce(model(bi, bc, bo, bg), bt))
+                bi, bc, bo, bg0, bg1, bt = gather_batch(ids)
+                vl += float(bce(model(bi, bc, bo, bg0, bg1), bt))
                 nb += 1
             vl /= max(nb, 1)
 

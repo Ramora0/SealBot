@@ -289,11 +289,14 @@ private:
             h[k] = v < 0.f ? 0.f : (v > NET_CLIP ? NET_CLIP : v);
         }
         float g0 = static_cast<float>(_move_count) * 0.02f;
+        // tempo: +moves_left/2 when the root player is to move, else negated
+        float g1 = (_cur_player == _player ? 1.0f : -1.0f)
+                   * static_cast<float>(_moves_left) * 0.5f;
         float out = NET_B2;
         for (int j = 0; j < NET_H; j++) {
             float s = NET_B1[j];
             for (int k = 0; k < NET_K; k++) s += NET_W1[j][k] * h[k];
-            s += NET_W1[j][NET_K] * g0;
+            s += NET_W1[j][NET_K] * g0 + NET_W1[j][NET_K + 1] * g1;
             if (s > 0.f) out += NET_W2[j] * s;
         }
         return static_cast<double>(out) * NET_OUT_SCALE;

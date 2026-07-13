@@ -14,7 +14,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 CURRENT_DIR = os.path.join(ROOT_DIR, "current")
 
-K, H, G = 32, 32, 1
+K, H, G = 32, 32, 2
 NUM_CLASSES = 8548
 OUT_SCALE = 600.0
 CLIP = 8.0

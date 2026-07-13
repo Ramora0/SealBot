@@ -104,12 +104,15 @@ def extract_features(cells, mover):
     return w_idx, w_counts[w_idx], c_idx, c_counts[c_idx]
 
 
-def net_forward(w_idx, w_cnt, c_idx, c_cnt, move_count, net):
-    """Reference forward pass matching bot.h::_leaf_eval exactly."""
+def net_forward(w_idx, w_cnt, c_idx, c_cnt, move_count, tempo, net):
+    """Reference forward pass matching bot.h::_leaf_eval exactly.
+
+    tempo = (+1 if root to move else -1) * moves_left * 0.5
+    """
     acc = (net["ew"][w_idx] * w_cnt[:, None]).sum(axis=0) \
         + (net["ec"][c_idx] * c_cnt[:, None]).sum(axis=0)
     h = np.clip(acc, 0.0, net["clip"])
     g0 = move_count * 0.02
-    x = np.concatenate([h, [g0]])
+    x = np.concatenate([h, [g0, tempo]])
     hidden = np.maximum(net["w1"] @ x + net["b1"], 0.0)
     return float((net["w2"] @ hidden + net["b2"]) * net["out_scale"])
