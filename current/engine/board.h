@@ -33,10 +33,10 @@ inline void MinimaxBot::_make(int q, int r) {
     int8_t cell_val = (player == P_A) ? _cell_a : _cell_b;
     int qi = q + OFF, ri = r + OFF;
 
-    // ── Conjunction features: subtract affected cell classes (pre-state) ──
-    int ccq[32], ccr[32];
+    // ── Conjunction features: snapshot affected cell classes (pre-state) ──
+    int ccq[32], ccr[32], ccls[32];
     int ncc = _collect_conj_cells(qi, ri, ccq, ccr);
-    _conj_apply(ccq, ccr, ncc, -1.0f);
+    _conj_snapshot(ccq, ccr, ncc, ccls);
 
     // ── 6-cell windows ──
     bool won = false;
@@ -72,11 +72,14 @@ inline void MinimaxBot::_make(int q, int r) {
         slot = new_pi;
     }
 
-    // ── 11-cell line patterns ──
+    // ── 11-cell line patterns (+ cached line codes) ──
     for (int d = 0; d < 3; d++)
-        for (int m = -LP_CENTER; m <= LP_CENTER; m++)
-            _lp[d][qi + m * DIR_Q[d]][ri + m * DIR_R[d]]
-                += cell_val * POW3_11[LP_CENTER - m];
+        for (int m = -LP_CENTER; m <= LP_CENTER; m++) {
+            int xq = qi + m * DIR_Q[d], xr = ri + m * DIR_R[d];
+            int& s = _lp[d][xq][xr];
+            s += cell_val * POW3_11[LP_CENTER - m];
+            _lc[d][xq][xr] = LINE_CODEBOOK[s];
+        }
 
     // ── Candidates ──
     Coord cell = pack(q, r);
@@ -108,17 +111,17 @@ inline void MinimaxBot::_make(int q, int r) {
         }
     }
 
-    // ── Conjunction features: add affected cell classes (post-state) ──
-    _conj_apply(ccq, ccr, ncc, 1.0f);
+    // ── Conjunction features: apply class diffs (post-state) ──
+    _conj_diff_apply(ccq, ccr, ncc, ccls);
 }
 
 inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player) {
     int qi = q + OFF, ri = r + OFF;
 
-    // ── Conjunction features: subtract affected cell classes (pre-undo) ──
-    int ccq[32], ccr[32];
+    // ── Conjunction features: snapshot affected cell classes (pre-undo) ──
+    int ccq[32], ccr[32], ccls[32];
     int ncc = _collect_conj_cells(qi, ri, ccq, ccr);
-    _conj_apply(ccq, ccr, ncc, -1.0f);
+    _conj_snapshot(ccq, ccr, ncc, ccls);
 
     // Remove stone
     _board[qi][ri] = 0;
@@ -165,11 +168,14 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
         slot = new_pi;
     }
 
-    // ── 11-cell line patterns ──
+    // ── 11-cell line patterns (+ cached line codes) ──
     for (int d = 0; d < 3; d++)
-        for (int m = -LP_CENTER; m <= LP_CENTER; m++)
-            _lp[d][qi + m * DIR_Q[d]][ri + m * DIR_R[d]]
-                -= cell_val * POW3_11[LP_CENTER - m];
+        for (int m = -LP_CENTER; m <= LP_CENTER; m++) {
+            int xq = qi + m * DIR_Q[d], xr = ri + m * DIR_R[d];
+            int& s = _lp[d][xq][xr];
+            s -= cell_val * POW3_11[LP_CENTER - m];
+            _lc[d][xq][xr] = LINE_CODEBOOK[s];
+        }
 
     // ── Candidates ──
     for (const auto& nb : g_nb_offsets) {
@@ -187,8 +193,8 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
         _cand_set.insert(cell);
     }
 
-    // ── Conjunction features: add affected cell classes (post-undo) ──
-    _conj_apply(ccq, ccr, ncc, 1.0f);
+    // ── Conjunction features: apply class diffs (post-undo) ──
+    _conj_diff_apply(ccq, ccr, ncc, ccls);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -266,15 +272,19 @@ inline void MinimaxBot::_init_eval_arrays() {
         }
     }
 
-    // 11-cell line patterns
+    // 11-cell line patterns + cached line codes
+    std::memset(_lc, LINE_CODEBOOK[0], sizeof(_lc));
     for (Coord c : _board_cells) {
         int bqi = pack_q(c) + OFF, bri = pack_r(c) + OFF;
         int8_t v = _board[bqi][bri];
         int cell_val = (v == P_A) ? _cell_a : _cell_b;
         for (int d = 0; d < 3; d++)
-            for (int m = -LP_CENTER; m <= LP_CENTER; m++)
-                _lp[d][bqi + m * DIR_Q[d]][bri + m * DIR_R[d]]
-                    += cell_val * POW3_11[LP_CENTER - m];
+            for (int m = -LP_CENTER; m <= LP_CENTER; m++) {
+                int xq = bqi + m * DIR_Q[d], xr = bri + m * DIR_R[d];
+                int& s = _lp[d][xq][xr];
+                s += cell_val * POW3_11[LP_CENTER - m];
+                _lc[d][xq][xr] = LINE_CODEBOOK[s];
+            }
     }
 
     // Conjunction classes over the bounding box of influence

@@ -129,8 +129,9 @@ private:
     int _wp[3][ARR][ARR] = {};
 
     // ── NNUE state: accumulator + 11-cell line patterns per (cell, dir) ──
-    float _acc[NET_K] = {};
-    int   _lp[3][ARR][ARR] = {};
+    float   _acc[NET_K] = {};
+    int     _lp[3][ARR][ARR] = {};
+    uint8_t _lc[3][ARR][ARR] = {};  // cached LINE_CODEBOOK[_lp[d][q][r]]
 
     // ── Candidates ──
     int8_t  _cand_rc[ARR][ARR] = {};
@@ -209,6 +210,7 @@ private:
         int wp[3][ARR][ARR];
         float acc[NET_K];
         int lp[3][ARR][ARR];
+        uint8_t lc[3][ARR][ARR];
         int8_t cand_rc[ARR][ARR];
         bool cand_bits[ARR][ARR];
         std::vector<Coord> cand_vec;
@@ -238,9 +240,9 @@ private:
     inline int _conj_class(int qi, int ri) const {
         int lp0 = _lp[0][qi][ri], lp1 = _lp[1][qi][ri], lp2 = _lp[2][qi][ri];
         if ((lp0 | lp1 | lp2) == 0) return -1;
-        uint8_t c0 = LINE_CODEBOOK[lp0];
-        uint8_t c1 = LINE_CODEBOOK[lp1];
-        uint8_t c2 = LINE_CODEBOOK[lp2];
+        uint8_t c0 = _lc[0][qi][ri];
+        uint8_t c1 = _lc[1][qi][ri];
+        uint8_t c2 = _lc[2][qi][ri];
         int8_t b = _board[qi][ri];
         if (b == 0) {
             int p0 = (c0 & 7) * 6 + (c0 >> 3);
@@ -270,15 +272,27 @@ private:
         return n;
     }
 
-    inline void _conj_apply(const int* cq, const int* cr, int n, float sign) {
+    // Snapshot classes before mutation; apply only the diffs after.
+    inline void _conj_snapshot(const int* cq, const int* cr, int n,
+                               int* out_cls) const {
+        for (int i = 0; i < n; i++)
+            out_cls[i] = _conj_class(cq[i], cr[i]);
+    }
+
+    inline void _conj_diff_apply(const int* cq, const int* cr, int n,
+                                 const int* old_cls) {
         for (int i = 0; i < n; i++) {
-            int cls = _conj_class(cq[i], cr[i]);
-            if (cls < 0) continue;
-            const float* e = NET_EC[cls];
-            if (sign > 0.f)
-                for (int k = 0; k < NET_K; k++) _acc[k] += e[k];
-            else
+            int nc = _conj_class(cq[i], cr[i]);
+            int oc = old_cls[i];
+            if (nc == oc) continue;
+            if (oc >= 0) {
+                const float* e = NET_EC[oc];
                 for (int k = 0; k < NET_K; k++) _acc[k] -= e[k];
+            }
+            if (nc >= 0) {
+                const float* e = NET_EC[nc];
+                for (int k = 0; k < NET_K; k++) _acc[k] += e[k];
+            }
         }
     }
 

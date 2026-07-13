@@ -119,6 +119,7 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     std::memcpy(_saved->wp, _wp, sizeof(_wp));
     std::memcpy(_saved->acc, _acc, sizeof(_acc));
     std::memcpy(_saved->lp, _lp, sizeof(_lp));
+    std::memcpy(_saved->lc, _lc, sizeof(_lc));
     std::memcpy(_saved->cand_rc, _cand_rc, sizeof(_cand_rc));
     std::memcpy(_saved->cand_bits, _cand_set.bits, sizeof(_cand_set.bits));
     _saved->cand_vec = _cand_set.vec;
@@ -160,6 +161,7 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
             std::memcpy(_wp, _saved->wp, sizeof(_wp));
             std::memcpy(_acc, _saved->acc, sizeof(_acc));
             std::memcpy(_lp, _saved->lp, sizeof(_lp));
+            std::memcpy(_lc, _saved->lc, sizeof(_lc));
             std::memcpy(_cand_rc, _saved->cand_rc, sizeof(_cand_rc));
             std::memcpy(_cand_set.bits, _saved->cand_bits, sizeof(_cand_set.bits));
             _cand_set.vec = std::move(_saved->cand_vec);

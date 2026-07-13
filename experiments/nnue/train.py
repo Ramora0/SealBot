@@ -146,6 +146,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", type=str, default="data/gen0")
     ap.add_argument("--out", type=str, default="output/gen0")
+    ap.add_argument("--loss", choices=["wdl", "score"], default="wdl",
+                    help="wdl: BCE on blended win-prob; score: Huber "
+                         "regression on search score (keeps resolution)")
     ap.add_argument("--lam", type=float, default=0.7)
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=8192)
@@ -164,15 +167,23 @@ def main():
                        args.max_positions)
     n = len(ds["score"])
 
-    # score->prob squash scaled so ~75% of nonzero scores stay unsaturated
-    score_scale = float(np.quantile(np.abs(ds["score"]), 0.75)) / 2.0
-    score_scale = max(score_scale, 500.0)
-    print(f"SCORE_SCALE = {score_scale:.0f} (data-driven)")
-
-    # targets in win-prob space (mover perspective)
-    t_score = 1.0 / (1.0 + np.exp(-ds["score"] / score_scale))
-    target = (args.lam * t_score
-              + (1.0 - args.lam) * ds["outcome"]).astype(np.float32)
+    if args.loss == "wdl":
+        # score->prob squash scaled so ~75% of nonzero scores stay unsaturated
+        score_scale = float(np.quantile(np.abs(ds["score"]), 0.75)) / 2.0
+        score_scale = max(score_scale, 500.0)
+        print(f"SCORE_SCALE = {score_scale:.0f} (data-driven)")
+        t_score = 1.0 / (1.0 + np.exp(-ds["score"] / score_scale))
+        target = (args.lam * t_score
+                  + (1.0 - args.lam) * ds["outcome"]).astype(np.float32)
+        out_scale = 600.0
+    else:
+        # regression target: score in units of 1000, outcome as +-8 anchor
+        t_out = (ds["outcome"] * 2.0 - 1.0) * 8.0
+        target = (args.lam * ds["score"] / 1000.0
+                  + (1.0 - args.lam) * t_out).astype(np.float32)
+        out_scale = 1000.0   # engine eval = model output * 1000
+        print(f"score-regression targets: mean {target.mean():.2f} "
+              f"std {target.std():.2f}")
     g0 = (ds["move_count"] * 0.02).astype(np.float32)
     g1 = (ds["moves_left"] * 0.5).astype(np.float32)  # root always to move
 
@@ -206,7 +217,7 @@ def main():
         if mirror:
             # color swap: root becomes the non-mover -> tempo negates
             bi = perm_t[bi]
-            bt = 1.0 - bt
+            bt = (1.0 - bt) if args.loss == "wdl" else -bt
             bg1 = -bg1
         return bi, bc, torch.from_numpy(bo), bg0, bg1, bt
 
@@ -214,7 +225,10 @@ def main():
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=args.epochs, eta_min=args.lr * 0.02)
-    bce = nn.BCEWithLogitsLoss()
+    if args.loss == "wdl":
+        loss_fn = nn.BCEWithLogitsLoss()
+    else:
+        loss_fn = nn.HuberLoss(delta=4.0)
 
     print(f"training: {len(train_ids)} train / {n_val} val, "
           f"lam={args.lam}, {args.epochs} epochs")
@@ -231,7 +245,7 @@ def main():
             bi, bc, bo, bg0, bg1, bt = gather_batch(ids, mirror=mirror)
             opt.zero_grad()
             logit = model(bi, bc, bo, bg0, bg1)
-            loss = bce(logit, bt)
+            loss = loss_fn(logit, bt)
             loss.backward()
             opt.step()
             tot_loss += float(loss.detach())
@@ -245,7 +259,7 @@ def main():
             for s in range(0, len(val_ids), args.batch):
                 ids = val_ids[s:s + args.batch]
                 bi, bc, bo, bg0, bg1, bt = gather_batch(ids)
-                vl += float(bce(model(bi, bc, bo, bg0, bg1), bt))
+                vl += float(loss_fn(model(bi, bc, bo, bg0, bg1), bt))
                 nb += 1
             vl /= max(nb, 1)
 
@@ -259,7 +273,7 @@ def main():
                 "w1.bias": model.w1.bias.detach().clone(),
                 "w2.weight": model.w2.weight.detach().clone(),
                 "w2.bias": model.w2.bias.detach().clone(),
-                "out_scale": torch.tensor(OUT_SCALE),
+                "out_scale": torch.tensor(out_scale),
                 "clip": torch.tensor(CLIP),
             }
             torch.save(sd, os.path.join(out_dir, "net.pt"))
