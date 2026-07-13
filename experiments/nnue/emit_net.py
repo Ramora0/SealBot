@@ -60,7 +60,7 @@ def emit(ew, ec, w1, b1, w2, b2, out_path, out_scale=OUT_SCALE, clip=CLIP,
         f.write(fmt_1d("NET_W2", w2))
     np.savez(out_path + ".npz", ew=ew, ec=ec, w1=w1, b1=b1, w2=w2,
              b2=np.float32(b2), out_scale=np.float32(out_scale),
-             clip=np.float32(clip))
+             clip=np.float32(clip), lin_blend=np.float32(lin_blend))
     print(f"wrote {out_path} ({os.path.getsize(out_path)/1e6:.1f} MB) + sidecar npz")
 
 
