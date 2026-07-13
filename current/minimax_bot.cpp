@@ -96,6 +96,17 @@ struct MinimaxBotWrapper {
         return worst;
     }
 
+    py::list policy_debug(py::object game, py::list cells, bool for_root) {
+        engine.static_eval(extract_game_state(game));
+        py::list out;
+        for (auto item : cells) {
+            auto t = item.cast<py::tuple>();
+            out.append(engine.policy_score_debug(
+                t[0].cast<int>(), t[1].cast<int>(), for_root));
+        }
+        return out;
+    }
+
     py::dict feature_counts(py::object game) {
         auto [wf, cf] = engine.debug_features(extract_game_state(game));
         py::dict w, c;
@@ -117,6 +128,8 @@ PYBIND11_MODULE(minimax_cpp, m) {
         .def("extract_pv", &MinimaxBotWrapper::extract_pv)
         .def("eval_position", &MinimaxBotWrapper::eval_position, py::arg("game"))
         .def("feature_counts", &MinimaxBotWrapper::feature_counts, py::arg("game"))
+        .def("policy_debug", &MinimaxBotWrapper::policy_debug,
+             py::arg("game"), py::arg("cells"), py::arg("for_root") = true)
         .def("acc_drift", &MinimaxBotWrapper::acc_drift,
              py::arg("game"), py::arg("tl") = 0.05)
         .def("__str__", [](const MinimaxBotWrapper&) { return "SealBot"; })

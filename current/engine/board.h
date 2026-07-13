@@ -36,8 +36,8 @@ inline void MinimaxBot::_make(int q, int r) {
     // ── Conjunction features: snapshot affected cell classes (pre-state) ──
     int ccq[32], ccr[32], ccls[32];
     int ncc = _collect_conj_cells(qi, ri, ccq, ccr);
-    if (_use_trunk) _trunk_cells(ccq, ccr, ncc, -1.f);
-    else            _conj_snapshot(ccq, ccr, ncc, ccls);
+    if (_need_acc2) _trunk_cells(ccq, ccr, ncc, -1.f);
+    if (!_use_trunk) _conj_snapshot(ccq, ccr, ncc, ccls);
 
     // ── 6-cell windows ──
     bool won = false;
@@ -67,11 +67,12 @@ inline void MinimaxBot::_make(int q, int r) {
         int old_pi = slot;
         int new_pi = old_pi + cell_val * _pow3[eo.k];
         _eval_score += pv[new_pi] - pv[old_pi];
-        if (_use_trunk) {
+        if (_need_acc2) {
             const float* en = TRK_EW[new_pi];
             const float* eo_ = TRK_EW[old_pi];
             for (int k = 0; k < TRK_K; k++) _acc2[k] += en[k] - eo_[k];
-        } else {
+        }
+        if (!_use_trunk) {
             const float* en = NET_EW[new_pi];
             const float* eo_ = NET_EW[old_pi];
             for (int k = 0; k < NET_K; k++) _acc[k] += en[k] - eo_[k];
@@ -119,8 +120,8 @@ inline void MinimaxBot::_make(int q, int r) {
     }
 
     // ── Conjunction features: apply class diffs (post-state) ──
-    if (_use_trunk) _trunk_cells(ccq, ccr, ncc, +1.f);
-    else            _conj_diff_apply(ccq, ccr, ncc, ccls);
+    if (_need_acc2) _trunk_cells(ccq, ccr, ncc, +1.f);
+    if (!_use_trunk) _conj_diff_apply(ccq, ccr, ncc, ccls);
 }
 
 inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player) {
@@ -129,8 +130,8 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
     // ── Conjunction features: snapshot affected cell classes (pre-undo) ──
     int ccq[32], ccr[32], ccls[32];
     int ncc = _collect_conj_cells(qi, ri, ccq, ccr);
-    if (_use_trunk) _trunk_cells(ccq, ccr, ncc, -1.f);
-    else            _conj_snapshot(ccq, ccr, ncc, ccls);
+    if (_need_acc2) _trunk_cells(ccq, ccr, ncc, -1.f);
+    if (!_use_trunk) _conj_snapshot(ccq, ccr, ncc, ccls);
 
     // Remove stone
     _board[qi][ri] = 0;
@@ -171,11 +172,12 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
         int old_pi = slot;
         int new_pi = old_pi - cell_val * _pow3[eo.k];
         _eval_score += pv[new_pi] - pv[old_pi];
-        if (_use_trunk) {
+        if (_need_acc2) {
             const float* en = TRK_EW[new_pi];
             const float* eo_ = TRK_EW[old_pi];
             for (int k = 0; k < TRK_K; k++) _acc2[k] += en[k] - eo_[k];
-        } else {
+        }
+        if (!_use_trunk) {
             const float* en = NET_EW[new_pi];
             const float* eo_ = NET_EW[old_pi];
             for (int k = 0; k < NET_K; k++) _acc[k] += en[k] - eo_[k];
@@ -209,8 +211,8 @@ inline void MinimaxBot::_undo(int q, int r, const SavedState& st, int8_t player)
     }
 
     // ── Conjunction features: apply class diffs (post-undo) ──
-    if (_use_trunk) _trunk_cells(ccq, ccr, ncc, +1.f);
-    else            _conj_diff_apply(ccq, ccr, ncc, ccls);
+    if (_need_acc2) _trunk_cells(ccq, ccr, ncc, +1.f);
+    if (!_use_trunk) _conj_diff_apply(ccq, ccr, ncc, ccls);
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -322,10 +324,8 @@ inline void MinimaxBot::_init_eval_arrays() {
         r0 = std::max(r0 - LP_CENTER, 0); r1 = std::min(r1 + LP_CENTER, ARR - 1);
         for (int qi = q0; qi <= q1; qi++)
             for (int ri = r0; ri <= r1; ri++) {
-                if (_use_trunk) {
-                    _trunk_cell(qi, ri, +1.f);
-                    continue;
-                }
+                if (_need_acc2) _trunk_cell(qi, ri, +1.f);
+                if (_use_trunk) continue;
                 int cls = _conj_class(qi, ri);
                 if (cls < 0) continue;
                 const float* e = NET_EC[cls];

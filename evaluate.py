@@ -260,6 +260,8 @@ sys.path.insert(0, root_dir)
 from game import HexGame, Player
 
 bot = MinimaxBot(time_limit)
+if os.environ.get("SEAL_MAX_DEPTH"):
+    bot.max_depth = int(os.environ["SEAL_MAX_DEPTH"])
 
 for line in sys.stdin:
     line = line.strip()
@@ -337,6 +339,30 @@ def _play_one_cross(root_dir, python_exe, time_limit, game_idx,
 
     try:
         game = HexGame(win_length=win_length)
+
+        # Optional random opening (SEAL_RAND_OPENING=<stones>): gives
+        # fixed-depth (deterministic) matches distinct games per pair.
+        # Same game_idx pair -> same opening for both seat assignments.
+        n_open = int(os.environ.get("SEAL_RAND_OPENING", "0"))
+        if n_open > 0:
+            import random as _random
+            rng = _random.Random(1000 + game_idx // 2)
+            placed = 0
+            while placed < n_open and not game.game_over:
+                if game.move_count == 0:
+                    game.make_move(0, 0)
+                    placed += 1
+                    continue
+                occ = set(game.board.keys())
+                near = [(q + dq, r + dr) for q, r in occ
+                        for dq in (-2, -1, 0, 1, 2) for dr in (-2, -1, 0, 1, 2)
+                        if (q + dq, r + dr) not in occ]
+                if not near:
+                    break
+                q, r = rng.choice(sorted(set(near)))
+                if not game.make_move(q, r):
+                    break
+                placed += 1
 
         if swapped:
             procs = {Player.A: proc_best, Player.B: proc_cur}

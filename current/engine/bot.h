@@ -71,7 +71,16 @@ public:
             _use_trunk = (std::string(e) == std::string("trunk"));
         if (const char* e = std::getenv("SEAL_TRUNK_BLEND"))
             _trunk_blend = std::atof(e);
-        if (_use_trunk && !_load_eraw()) _use_trunk = false;
+        // Policy source, independent of the value head: 1 = trunk MLP,
+        // 0 = legacy PW/PC tables. Defaults to following SEAL_EVAL.
+        _trunk_policy = _use_trunk;
+        if (const char* e = std::getenv("SEAL_TRUNK_POLICY"))
+            _trunk_policy = std::atoi(e) != 0;
+        if ((_use_trunk || _trunk_policy) && !_load_eraw()) {
+            _use_trunk = false;
+            _trunk_policy = false;
+        }
+        _need_acc2 = _use_trunk || _trunk_policy;
     }
 
     // ── Pattern loading (call from wrapper after construction) ──
@@ -110,6 +119,9 @@ public:
 
     // ── Debug / training hooks (implemented in board.h) ──
     double static_eval(const GameState& gs);
+    double policy_score_debug(int q, int r, bool for_root) const {
+        return _policy_score(q, r, for_root);
+    }
     std::pair<std::vector<std::pair<int,int>>, std::vector<std::pair<int,int>>>
         debug_features(const GameState& gs);
     std::vector<float> get_acc() const {
@@ -174,6 +186,8 @@ private:
     // table (3^11 x K floats, ~23 MB) is loaded from TRK_ERAW_PATH at
     // construction (SEAL_TRUNK_BLOB overrides), shared across instances. ──
     bool   _use_trunk = false;
+    bool   _trunk_policy = false;
+    bool   _need_acc2 = false;   // maintain _acc2 (trunk value OR policy)
     float  _trunk_blend = TRK_LIN_BLEND;
     float  _acc2[TRK_K] = {};
     inline static std::vector<float> g_eraw;
@@ -293,7 +307,10 @@ private:
     // ── Inline helpers ──
     inline void _check_time() {
         _nodes++;
-        if ((_nodes & 1023) == 0 && Clock::now() >= _deadline)
+        // Trunk nodes are ~1.5x slower; check the clock more often so the
+        // overshoot past the deadline stays comparable to the legacy net.
+        int mask = _use_trunk ? 255 : 1023;
+        if ((_nodes & mask) == 0 && Clock::now() >= _deadline)
             throw TimeUp{};
     }
 
@@ -376,16 +393,14 @@ private:
         int qi = q + OFF, ri = r + OFF;
         float x[2 * TRK_K + 2];
         int l0 = _lp[0][qi][ri], l1 = _lp[1][qi][ri], l2 = _lp[2][qi][ri];
-        if ((l0 | l1 | l2) == 0) {
-            for (int k = 0; k < TRK_K; k++) x[k] = 0.f;
-        } else {
-            const float* e0 = _eraw_row(l0);
-            const float* e1 = _eraw_row(l1);
-            const float* e2 = _eraw_row(l2);
-            for (int k = 0; k < TRK_K; k++) {
-                float s = e0[k] + e1[k] + e2[k];
-                x[k] = s < 0.f ? 0.f : (s > TRK_CLIP ? TRK_CLIP : s);
-            }
+        // NB: all-zero lines still read row 0 — the trained head expects
+        // clamp(3*eraw[0]) there, not zeros (parity bug otherwise).
+        const float* e0 = _eraw_row(l0);
+        const float* e1 = _eraw_row(l1);
+        const float* e2 = _eraw_row(l2);
+        for (int k = 0; k < TRK_K; k++) {
+            float s = e0[k] + e1[k] + e2[k];
+            x[k] = s < 0.f ? 0.f : (s > TRK_CLIP ? TRK_CLIP : s);
         }
         for (int k = 0; k < TRK_K; k++) {
             float v = _acc2[k];
@@ -409,7 +424,7 @@ private:
     // moves read through the color-mirror index tables. Higher = better
     // for the side placing the stone.
     inline double _policy_score(int q, int r, bool for_root) const {
-        if (_use_trunk) return _policy_score_trunk(q, r, for_root);
+        if (_trunk_policy) return _policy_score_trunk(q, r, for_root);
         int qi = q + OFF, ri = r + OFF;
         double s = 0.0;
         if (for_root) {
