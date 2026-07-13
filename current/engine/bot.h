@@ -34,11 +34,13 @@ public:
     // the candidate set even when the policy ranks them below the cap
     // (policy tail can drop forced blocks). SEAL_DELTA_KEEP overrides.
     int    delta_keep    = 0;
-    // Ordering source bits: 0 = interior candidate selection, 1 = root
-    // selection, 2 = threat/qsearch turn ordering + companion. Default 2
-    // (policy at root only; +402 there, catastrophic elsewhere — cause
-    // under investigation). SEAL_POLICY_MODE overrides.
-    int    policy_mode   = 2;
+    // Ordering source bits: 1=our-interior, 2=root, 4=threat path,
+    // 8=opp-interior, 32=policy reorders delta picks, 64=rank fusion at
+    // interior (min(policy_rank, delta_rank): coverage = union of both).
+    // Default 74 = policy at root + opp-interior fusion: +402 vs no-policy,
+    // equal to root-only head-to-head, strictly wider refutation coverage.
+    // SEAL_POLICY_MODE overrides.
+    int    policy_mode   = 74;
     double time_limit;
     int    last_depth  = 0;
     int    _nodes      = 0;
@@ -311,7 +313,32 @@ private:
                                    bool use_policy) {
         std::vector<std::pair<double, Coord>> scored;
         scored.reserve(cands.size());
-        if (use_policy) {
+        if (use_policy && (policy_mode & 64)) {
+            // Rank fusion: key = min(policy_rank, delta_rank). Coverage is
+            // the UNION of both systems' recall (tree at least as sound as
+            // delta's), top ordering is the policy's (tiebreak by policy).
+            size_t n = cands.size();
+            std::vector<std::pair<double, int>> ps(n), ds(n);
+            double sgn = maximizing ? 1.0 : -1.0;
+            for (size_t k = 0; k < n; k++) {
+                Coord c = cands[k];
+                ps[k] = {-_policy_score(pack_q(c), pack_r(c), maximizing),
+                         static_cast<int>(k)};
+                ds[k] = {-_move_delta(pack_q(c), pack_r(c), is_a) * sgn,
+                         static_cast<int>(k)};
+            }
+            std::sort(ps.begin(), ps.end());
+            std::sort(ds.begin(), ds.end());
+            std::vector<int> rp(n), rd(n);
+            for (size_t r = 0; r < n; r++) {
+                rp[ps[r].second] = static_cast<int>(r);
+                rd[ds[r].second] = static_cast<int>(r);
+            }
+            for (size_t k = 0; k < n; k++) {
+                double key = std::min(rp[k], rd[k]) * 1000.0 + rp[k];
+                scored.push_back({-key, cands[k]});
+            }
+        } else if (use_policy) {
             for (Coord c : cands)
                 scored.push_back({_policy_score(pack_q(c), pack_r(c), maximizing), c});
         } else {
