@@ -1,0 +1,259 @@
+"""Train the NNUE eval on self-play data.
+
+Architecture (must match current/engine/bot.h::_leaf_eval):
+    acc  = sum EW[window pattern] + sum EC[conjunction class]   (K dims)
+    h    = clip(acc, 0, CLIP)
+    out  = W2 @ relu(W1 @ [h; move_count*0.02] + b1) + b2
+    eval = out * OUT_SCALE   (engine side)
+
+Training target: t = lam * sigmoid(score / SCORE_SCALE) + (1-lam) * outcome,
+with the net's sigmoid(out) matched by BCE. Mirror augmentation (color swap
+= negated logit via feature permutations) is applied on the fly.
+
+Usage:
+    python train.py --data data/gen0 --out output/gen0
+"""
+
+import argparse
+import glob
+import os
+import pickle
+import sys
+import time
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+sys.path.insert(0, SCRIPT_DIR)
+
+from features import extract_features, MIRROR729, CLASS_MIRROR, NUM_CLASSES
+
+K, H = 32, 32
+CLIP = 8.0
+OUT_SCALE = 600.0
+SCORE_SCALE = 4000.0     # search-score -> win-prob squash
+SCORE_CLAMP = 30000.0    # tame mate scores
+WIN_SCORE_MIN = 1e6      # anything above this is a mate score
+
+
+# ── Dataset build: shards -> packed sparse feature arrays ──────────────────
+
+def _process_shard(sp):
+    from features import extract_features as ef
+    feat_idx, feat_cnt, lens = [], [], []
+    scores, outs, mcs = [], [], []
+    with open(sp, "rb") as f:
+        games = pickle.load(f)
+    for g in games:
+        winner = g["winner"]
+        for pos in g["positions"]:
+            mover = pos["mover"]
+            w_idx, w_cnt, c_idx, c_cnt = ef(pos["cells"], mover)
+            fi = np.concatenate([w_idx, c_idx + 729])
+            fc = np.concatenate([w_cnt, c_cnt])
+            feat_idx.append(fi.astype(np.int32))
+            feat_cnt.append(fc.astype(np.int16))
+            lens.append(len(fi))
+            sc = pos["score"]
+            if abs(sc) > WIN_SCORE_MIN:
+                sc = np.sign(sc) * SCORE_CLAMP
+            scores.append(float(np.clip(sc, -SCORE_CLAMP, SCORE_CLAMP)))
+            outs.append(0.5 if winner == 0 else
+                        (1.0 if winner == mover else 0.0))
+            mcs.append(pos["move_count"])
+    if not lens:
+        return None
+    return (np.concatenate(feat_idx), np.concatenate(feat_cnt),
+            np.array(lens, dtype=np.int64),
+            np.array(scores, dtype=np.float32),
+            np.array(outs, dtype=np.float32),
+            np.array(mcs, dtype=np.int32))
+
+
+def build_dataset(data_dir, cache_path, max_positions=None, workers=16):
+    if os.path.exists(cache_path):
+        print(f"loading cached dataset {cache_path}")
+        d = np.load(cache_path)
+        return {k: d[k] for k in d.files}
+
+    import multiprocessing as mp
+    shards = sorted(glob.glob(os.path.join(data_dir, "*.pkl")))
+    print(f"building dataset from {len(shards)} shards ({workers} workers)...")
+    t0 = time.time()
+
+    fis, fcs, lens_all = [], [], []
+    scores, outs, mcs = [], [], []
+    n_pos = 0
+    with mp.Pool(workers) as pool:
+        for i, res in enumerate(pool.imap(_process_shard, shards)):
+            if res is None:
+                continue
+            fi, fc, lens, sc, ou, mc = res
+            fis.append(fi); fcs.append(fc); lens_all.append(lens)
+            scores.append(sc); outs.append(ou); mcs.append(mc)
+            n_pos += len(lens)
+            if (i + 1) % 40 == 0:
+                print(f"  {i+1}/{len(shards)} shards, {n_pos} positions, "
+                      f"{time.time()-t0:.0f}s", flush=True)
+            if max_positions and n_pos >= max_positions:
+                pool.terminate()
+                break
+
+    lens = np.concatenate(lens_all)
+    offsets = np.zeros(len(lens) + 1, dtype=np.int64)
+    np.cumsum(lens, out=offsets[1:])
+    ds = {
+        "feat_idx": np.concatenate(fis),
+        "feat_cnt": np.concatenate(fcs),
+        "offsets": offsets,
+        "score": np.concatenate(scores),
+        "outcome": np.concatenate(outs),
+        "move_count": np.concatenate(mcs),
+    }
+    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+    np.savez(cache_path, **ds)
+    print(f"dataset: {n_pos} positions, "
+          f"{len(ds['feat_idx'])/n_pos:.0f} feats/pos, {time.time()-t0:.0f}s")
+    return ds
+
+
+# ── Model ───────────────────────────────────────────────────────────────────
+
+class SealNNUE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.EmbeddingBag(729 + NUM_CLASSES, K, mode="sum",
+                                   include_last_offset=True)
+        nn.init.normal_(self.emb.weight, 0.0, 0.05)
+        with torch.no_grad():
+            self.emb.weight[0].zero_()  # window pattern 0 never occurs; keep 0
+        self.w1 = nn.Linear(K + 1, H)
+        self.w2 = nn.Linear(H, 1)
+
+    def forward(self, idx, cnt, offsets, g0):
+        acc = self.emb(idx, offsets, per_sample_weights=cnt)
+        h = torch.clamp(acc, 0.0, CLIP)
+        x = torch.cat([h, g0.unsqueeze(1)], dim=1)
+        return self.w2(torch.relu(self.w1(x))).squeeze(1)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data", type=str, default="data/gen0")
+    ap.add_argument("--out", type=str, default="output/gen0")
+    ap.add_argument("--lam", type=float, default=0.6)
+    ap.add_argument("--epochs", type=int, default=12)
+    ap.add_argument("--batch", type=int, default=8192)
+    ap.add_argument("--lr", type=float, default=1.5e-3)
+    ap.add_argument("--max-positions", type=int, default=None)
+    ap.add_argument("--val-frac", type=float, default=0.03)
+    ap.add_argument("--threads", type=int, default=16)
+    args = ap.parse_args()
+
+    torch.set_num_threads(args.threads)
+    data_dir = os.path.join(SCRIPT_DIR, args.data)
+    out_dir = os.path.join(SCRIPT_DIR, args.out)
+    os.makedirs(out_dir, exist_ok=True)
+
+    ds = build_dataset(data_dir, os.path.join(out_dir, "dataset.npz"),
+                       args.max_positions)
+    n = len(ds["score"])
+
+    # targets in win-prob space (mover perspective)
+    t_score = 1.0 / (1.0 + np.exp(-ds["score"] / SCORE_SCALE))
+    target = (args.lam * t_score
+              + (1.0 - args.lam) * ds["outcome"]).astype(np.float32)
+    g0 = (ds["move_count"] * 0.02).astype(np.float32)
+
+    # mirror-permutation for augmentation over the merged feature space
+    perm = np.concatenate([MIRROR729, CLASS_MIRROR + 729]).astype(np.int64)
+    perm_t = torch.from_numpy(perm)
+
+    rng = np.random.default_rng(0)
+    order = rng.permutation(n)
+    n_val = int(n * args.val_frac)
+    val_ids, train_ids = order[:n_val], order[n_val:]
+
+    offsets = ds["offsets"]
+    fidx = torch.from_numpy(ds["feat_idx"].astype(np.int64))
+    fcnt = torch.from_numpy(ds["feat_cnt"].astype(np.float32))
+    tgt = torch.from_numpy(target)
+    g0_t = torch.from_numpy(g0)
+
+    def gather_batch(ids, mirror=False):
+        lens = offsets[ids + 1] - offsets[ids]
+        bo = np.zeros(len(ids) + 1, dtype=np.int64)
+        np.cumsum(lens, out=bo[1:])
+        gather = np.concatenate(
+            [np.arange(offsets[i], offsets[i + 1]) for i in ids])
+        bi = fidx[gather]
+        bc = fcnt[gather]
+        bt = tgt[ids]
+        bg = g0_t[ids]
+        if mirror:
+            bi = perm_t[bi]
+            bt = 1.0 - bt
+        return bi, bc, torch.from_numpy(bo), bg, bt
+
+    model = SealNNUE()
+    opt = torch.optim.Adam(model.parameters(), lr=args.lr)
+    bce = nn.BCEWithLogitsLoss()
+
+    print(f"training: {len(train_ids)} train / {n_val} val, "
+          f"lam={args.lam}, {args.epochs} epochs")
+    best_val = float("inf")
+
+    for ep in range(args.epochs):
+        model.train()
+        rng.shuffle(train_ids)
+        t0 = time.time()
+        tot_loss = n_batches = 0
+        for s in range(0, len(train_ids), args.batch):
+            ids = train_ids[s:s + args.batch]
+            mirror = (n_batches % 2 == 1)   # alternate color-mirrored batches
+            bi, bc, bo, bg, bt = gather_batch(ids, mirror=mirror)
+            opt.zero_grad()
+            logit = model(bi, bc, bo, bg)
+            loss = bce(logit, bt)
+            loss.backward()
+            opt.step()
+            tot_loss += float(loss)
+            n_batches += 1
+
+        model.eval()
+        with torch.no_grad():
+            vl = 0.0
+            nb = 0
+            for s in range(0, len(val_ids), args.batch):
+                ids = val_ids[s:s + args.batch]
+                bi, bc, bo, bg, bt = gather_batch(ids)
+                vl += float(bce(model(bi, bc, bo, bg), bt))
+                nb += 1
+            vl /= max(nb, 1)
+
+        marker = ""
+        if vl < best_val:
+            best_val = vl
+            sd = {
+                "ew.weight": model.emb.weight[:729].detach().clone(),
+                "ec.weight": model.emb.weight[729:].detach().clone(),
+                "w1.weight": model.w1.weight.detach().clone(),
+                "w1.bias": model.w1.bias.detach().clone(),
+                "w2.weight": model.w2.weight.detach().clone(),
+                "w2.bias": model.w2.bias.detach().clone(),
+                "out_scale": torch.tensor(OUT_SCALE),
+                "clip": torch.tensor(CLIP),
+            }
+            torch.save(sd, os.path.join(out_dir, "net.pt"))
+            marker = "  *saved*"
+        print(f"epoch {ep+1}/{args.epochs}: train {tot_loss/n_batches:.4f} "
+              f"val {vl:.4f} ({time.time()-t0:.0f}s){marker}", flush=True)
+
+    print(f"best val loss {best_val:.4f}; checkpoint {out_dir}/net.pt")
+
+
+if __name__ == "__main__":
+    main()
