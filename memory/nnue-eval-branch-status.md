@@ -1,20 +1,20 @@
 ---
 name: nnue-eval-branch-status
-description: Status of the overnight NNUE eval build on branch nnue-eval (2026-07-12/13) — what works, gate results, key findings
+description: Final status of the overnight NNUE eval build on branch nnue-eval — champion config beats original 87% (+320 Elo, n=600), full pipeline in experiments/nnue/
 metadata:
   type: project
 ---
 
-Overnight autonomous build (user asked to skip stages and go straight to full NNUE, bootstrap from original bot, keep iterating until it beats `best/`).
+Overnight autonomous build (2026-07-12→13), branch `nnue-eval`, goal achieved: **NNUE hybrid eval beats original SealBot 87.2% pooled over 600 games (~+330 Elo, final 300-game run: 86.3%, p=2.6e-36), while searching shallower (2.7 vs 3.1)**.
 
-Built and verified on branch `nnue-eval`:
-- Full NNUE engine in `current/`: acc[K=32] + EW[729] window embeddings + EC[8548] conjunction embeddings (11-cell `_lp` line patterns, 3^11 codebook w/ exact refutability); parity engine↔numpy EXACT on features; acc drift <1e-3 after live search. `pv[]` kept for ordering only.
-- Pipeline: `datagen.py` (self-play, 50k games/693k pos), `relabel.py` (deep teacher tl=0.12), `train.py` (torch EmbeddingBag, wdl BCE or score Huber, mirror aug, tempo input g1), `emit_net.py` → `net_data.h` (+ sidecar npz), `gate.sh` (MUST force-clean build: setuptools misses header deps — this bug wasted one gate cycle), `test_parity.py`, `deep_pipeline.sh`.
+Champion config (left built in `current/`): deep_score net (`experiments/nnue/output/deep_score/net.pt`) + ORIGINAL CMA pattern table (ordering + leaf blend) + `NET_LIN_BLEND 0.15`. Recipe that produced the net: gen0 self-play by original bot (50k games) → relabel with original @ tl 0.12 → Huber score-space regression (λ=0.85 score, ±8 outcome anchor), 60 epochs.
 
-Gate history vs frozen original (100g @ 0.1s): net-only v1 −382 Elo, v2 −449; **hybrid eval `net*scale + blend*_eval_score` at blend 0.15: +78 Elo p=0.028** (blend 0.3: +37..+67; 0.6: 0). [[sealbot-improvement-roadmap]]
+Engine: acc[K=32] + window embeddings EW[729] + conjunction embeddings EC[8548] (11-cell `_lp` line patterns, 3^11 codebook, 6-level refutability alphabet), tempo input, `eval = net*1000 + 0.15*_eval_score`. Parity + drift tested (`test_parity.py`). ~2.5x/node slower than original — int16/lazy-update/K=16 optimizations untried.
 
-THE key insight: net sign-agreement w/ deep search 0.84 vs old eval 0.57, but Spearman rank corr 0.18 vs 0.43 — net knows who's winning, linear window-sum knows local move gradients; hybrid combines. Net-only saturation traced to wdl targets squashing decided positions.
+Hard-won lessons:
+- WDL-sigmoid targets saturate on mate-heavy shallow labels → net learns sign only, flat mid-range → LOSES (−400). Score-space Huber on deep labels fixed it.
+- Decisive diagnostic: sign-agreement vs rank-correlation with deep search splits eval quality into "who wins" (net: 0.84) vs "local ordering" (linear: 0.43); blend combines. Blend is a SHARP optimum: 0.10→0, 0.15→+338, 0.20→+21, 0.25→−576 (old table's 43% wrong signs on decided positions outvote the net above ~0.2).
+- All improvement attempts on top gated flat: gen1 self-play net (+7), mixed data (−7), deep-refit linear table (+28 despite better offline spearman 0.52 vs 0.43). Champion may be partly opponent-specific (in-distribution for original-vs-original). Self-improvement loop needs work (teacher depth, data mixing).
+- gate.sh MUST force-clean builds (setuptools misses header deps — cost one false 0W/91L gate). Fit linear models on quiet positions with an intercept (tempo bias +3000); mate targets destroy l2 fits.
 
-Perf: NNUE engine ~270-290k nps vs original 720k (2.5x/node, ~0.3-0.4 ply); diff-apply + line-code cache added, deeper opts (int16, K=16) untried.
-
-Env gotchas: run evaluate/benchmark on an UNLOADED machine (30-worker relabel skews); background Bash needs explicit big timeout; icpc compiler (fast-fp → 3e-4 float noise in parity, fine).
+All scripts in `experiments/nnue/`: datagen, relabel, train (wdl|score), emit_net (--lin-blend), gate.sh, deep_pipeline.sh, gen1_pipeline.sh, linear_refit, test_parity, LOG.md (full history).
