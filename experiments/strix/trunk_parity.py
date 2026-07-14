@@ -36,7 +36,7 @@ CKPT = os.environ.get("TRUNK_CKPT",
 def main():
     assert os.environ.get("SEAL_EVAL") == "trunk", "run with SEAL_EVAL=trunk"
     ck = torch.load(CKPT, map_location="cpu")
-    model = Trunk2()
+    model = Trunk2(k=ck.get("K", 32), h=ck.get("H", 32), hp=ck.get("HP", 32))
     model.load_state_dict(ck["state"])
     model.eval()
 
