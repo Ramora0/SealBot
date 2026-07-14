@@ -361,3 +361,17 @@ ordering-throughput, not decision quality; user correctly rejected the
 Open: if tv+lp replicates and lv+tp lands high, ordering x eval
 SELF-CONSISTENCY dominates (search steers into positions the leaf model
 must understand; co-trained heads agree, mixed pairs disagree).
+
+## Beat-strix campaign ladder (honest, equal-time 150-game benches)
+
+champion (distill+tables):                        10/150  (-451)
++ VCF solver (root attack k=8):                   16/150  (-365)
++ post-search deep veto (bit 8):                  22/150  (-303)
+trunk3 (K=64 co-trained pair) + full VCF:         43/150  (-157)
+
+Loss post-mortem (127 recorded losses): 100% end in provable strix
+forcing wins; 90% entered provably-lost territory >=4 turns early. Zero
+positional losses -> remaining gap is PRE-tactical (value must smell
+danger before it's provable). v1.4 training with proven-win-saturated
+targets (18.1% of 981k positions). Note: the transient 34/150 result was
+disqualified (defense filter overshot the clock pre-honesty-patch).
