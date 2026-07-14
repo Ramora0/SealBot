@@ -82,7 +82,8 @@ class TrunkScorer:
         self.arch = ck.get("arch", "v1")
         if self.arch == "v2":
             from trunk_train2 import Trunk2
-            self.m = Trunk2()
+            self.m = Trunk2(k=ck.get("K", 32), h=ck.get("H", 32),
+                            hp=ck.get("HP", 32))
         else:
             self.m = Trunk()
         self.m.load_state_dict(ck["state"])

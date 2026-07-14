@@ -116,23 +116,24 @@ def build_siblings(cache, workers):
 # ── model ───────────────────────────────────────────────────────────────
 
 class Trunk2(nn.Module):
-    def __init__(self):
+    def __init__(self, k=K, h=H, hp=HP):
         super().__init__()
-        self.eraw = nn.Embedding(N_RAW, K)
+        self.k, self.h, self.hp = k, h, hp
+        self.eraw = nn.Embedding(N_RAW, k)
         nn.init.normal_(self.eraw.weight, 0.0, 0.03)
-        self.ew = nn.EmbeddingBag(729, K, mode="sum",
+        self.ew = nn.EmbeddingBag(729, k, mode="sum",
                                   include_last_offset=True)
         nn.init.normal_(self.ew.weight, 0.0, 0.03)
-        self.w1 = nn.Linear(K + 2, H)
-        self.w2 = nn.Linear(H, 1)
-        self.p1 = nn.Linear(2 * K + 2, HP)
-        self.p2 = nn.Linear(HP, 1)
+        self.w1 = nn.Linear(k + 2, h)
+        self.w2 = nn.Linear(h, 1)
+        self.p1 = nn.Linear(2 * k + 2, hp)
+        self.p2 = nn.Linear(hp, 1)
 
     def cell_act(self, trip):
         return torch.clamp(self.eraw(trip).sum(dim=1), 0.0, CLIP)
 
     def accum(self, trip, seg, npos, wi, wc, woff):
-        acc = torch.zeros(npos, K, device=trip.device).index_add_(
+        acc = torch.zeros(npos, self.k, device=trip.device).index_add_(
             0, seg, self.cell_act(trip))
         return acc + self.ew(wi, woff, per_sample_weights=wc)
 
@@ -172,6 +173,9 @@ def main():
     ap.add_argument("--threads", type=int, default=14)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
+    ap.add_argument("--K", type=int, default=K)
+    ap.add_argument("--H", type=int, default=H)
+    ap.add_argument("--HP", type=int, default=HP)
     ap.add_argument("--human", action="store_true")
     ap.add_argument("--mirror", action="store_true",
                     help="alternate color-mirrored batches (negated target "
@@ -222,7 +226,7 @@ def main():
     n_gval = min(3000, ng // 10)
     gval_ids, gtrain_ids = np.sort(gorder[:n_gval]), gorder[n_gval:]
 
-    model = Trunk2().to(dev)
+    model = Trunk2(k=args.K, h=args.H, hp=args.HP).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=args.epochs, eta_min=args.lr * 0.05)
@@ -371,7 +375,8 @@ def main():
               f" ({time.time()-t0:.0f}s)", flush=True)
 
     torch.save({"state": {k: v.cpu() for k, v in model.state_dict().items()},
-                "K": K, "H": H, "HP": HP, "CLIP": CLIP, "arch": "v2"},
+                "K": args.K, "H": args.H, "HP": args.HP, "CLIP": CLIP,
+                "arch": "v2"},
                os.path.join(out_dir, "trunk.pt"))
     print(f"saved {out_dir}/trunk.pt")
 

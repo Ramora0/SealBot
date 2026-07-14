@@ -150,6 +150,40 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     if (turns.empty())
         return {0, 0, 0, 0, 1};
 
+    // ── VCF root probes ──
+    if (vcf_mode & 1) {
+        // Attack: play a proven forced win immediately.
+        Turn wt{};
+        if (forced_win(_cur_player, _moves_left, 8, &wt) == 1) {
+            last_depth = 99;
+            last_score = (WIN_SCORE - 1);
+            return {pack_q(wt.first),  pack_r(wt.first),
+                    pack_q(wt.second), pack_r(wt.second), 2};
+        }
+    }
+    if ((vcf_mode & 2) && turns.size() > 3) {
+        // Defense: drop turns after which the opponent has a proven
+        // forced win (bounded probe per turn). Keep at least 3 turns.
+        int budget_save = vcf_node_budget;
+        vcf_node_budget = 800;
+        std::vector<Turn> safe;
+        safe.reserve(turns.size());
+        for (const auto& t : turns) {
+            UndoStep steps[2];
+            int n = _make_turn(t, steps);
+            bool losing = false;
+            if (!_game_over)
+                losing = (forced_win(_cur_player, _moves_left, 4,
+                                     nullptr) == 1);
+            _undo_turn(steps, n);
+            if (!losing) safe.push_back(t);
+        }
+        vcf_node_budget = budget_save;
+        // All-losing => keep the originals (search picks longest resistance).
+        if (!safe.empty())
+            turns = std::move(safe);
+    }
+
     Turn best_move = turns[0];
 
     // ── Lazy SMP: launch helper searchers sharing the TT ──
@@ -542,6 +576,23 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
             _ply--;
             _undo_turn(steps, n);
             _tt_store_entry(ttk, depth, _tt_adjust_store(sc), TT_EXACT, wt, true);
+            return sc;
+        }
+    }
+
+    // VCF interior probe: proven forced win for the mover terminates the
+    // node without expansion (tactical depth grafted onto shallow search).
+    if ((vcf_mode & 4) && depth >= 2) {
+        int budget_save = vcf_node_budget;
+        vcf_node_budget = 400;
+        Turn vt{};
+        int fw = forced_win(_cur_player, _moves_left, 3, &vt);
+        vcf_node_budget = budget_save;
+        if (fw == 1) {
+            double sc = (_cur_player == _player) ? (WIN_SCORE - _ply - 4)
+                                                 : (-WIN_SCORE + _ply + 4);
+            _tt_store_entry(ttk, depth, _tt_adjust_store(sc), TT_EXACT, vt,
+                            true);
             return sc;
         }
     }

@@ -69,6 +69,8 @@ public:
         ensure_tables();
         if (const char* e = std::getenv("SEAL_THREADS"))
             threads = std::max(1, std::atoi(e));
+        if (const char* e = std::getenv("SEAL_VCF"))
+            vcf_mode = std::atoi(e);
         if (const char* e = std::getenv("SEAL_CAND_CAP"))
             cand_cap = std::atoi(e);
         if (const char* e = std::getenv("SEAL_ROOT_CAP"))
@@ -157,6 +159,11 @@ public:
     // 10 ms; raising it to 50000 (~100 ms worst) finds ~8% more deep wins.
     int vcf_node_budget = 5000;
     int vcf_nodes       = 0;       // nodes used by the last forced_win call
+    // Search integration bits (SEAL_VCF): 1 = root attack probe (play a
+    // proven win instantly), 2 = root defense filter (drop turns after
+    // which the opponent has a proven forced win), 4 = interior attack
+    // probe at depth >= 2 nodes. Default 0 until gated.
+    int vcf_mode = 0;
 
     // ── Check near-threat pre-filter (2+ unblocked windows with 3+ stones) ──
     bool has_near_threats() const {
@@ -356,6 +363,8 @@ private:
         pair_moves    = m.pair_moves;
         no_cand_cap   = m.no_cand_cap;
         max_depth     = m.max_depth;
+        vcf_mode      = m.vcf_mode;
+        vcf_node_budget = m.vcf_node_budget;
         _use_trunk    = m._use_trunk;
         _trunk_policy = m._trunk_policy;
         _need_acc2    = m._need_acc2;
