@@ -89,7 +89,7 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
         record.append({"game_idx": game_idx, "hexo_is_a": hexo_is_a,
                        "seq": seq, "winner": int(game.winner.value)
                        if game.winner != SBPlayer.NONE else 0,
-                       "sealbot_won": bool(is_win)})
+                       "sealbot_won": not bool(is_win) and not bool(is_draw)})
     return {"moves": moves, "is_win": is_win,
             "is_loss": (not is_win) and (not is_draw), "is_draw": is_draw}
 

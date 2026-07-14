@@ -48,6 +48,9 @@ def main():
     max_k = int(sys.argv[2]) if len(sys.argv) > 2 else 16
     with open(path, "rb") as fh:
         games = pickle.load(fh)
+    if "--flip" in sys.argv:
+        for g in games:
+            g["sealbot_won"] = not g["sealbot_won"]
 
     bot = minimax_cpp.MinimaxBot(0.1)
     bot.vcf_node_budget = 60000
