@@ -308,9 +308,16 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
             bool losing = false;
             if (!_game_over) {
                 probes++;
-                losing = (forced_win(_cur_player, _moves_left,
-                                     std::max(6, vcf_k - 2),
+                // Tiered: the search's chosen move gets one DEEP probe
+                // (post-mortems prove our loss entries at k<=16 while
+                // shallow probes miss them); alternatives get k-2.
+                int kk = (probes == 1) ? vcf_k + 3
+                                       : std::max(6, vcf_k - 2);
+                int bsave = vcf_node_budget;
+                if (probes == 1) vcf_node_budget = bsave * 2;
+                losing = (forced_win(_cur_player, _moves_left, kk,
                                      nullptr) == 1);
+                vcf_node_budget = bsave;
             }
             _undo_turn(steps, n);
             if (!losing) { best_move = t; break; }
