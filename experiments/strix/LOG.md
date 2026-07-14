@@ -383,3 +383,29 @@ needs won-cleanly > won-eventually contrasts. If revisited: soft floor
 (t = max(t, 6.5)) or mate-distance-graded targets, not a constant.
 Current champion build: trunk3 (K=64) + mode74 + SEAL_VCF=15 (tiered
 veto) + k=11/40k = 45/150 (gap -146).
+
+## v1.5 NEW CHAMPION: soft-floor labels -> 63/150 (42%, gap -56)
+
+Same K=64 trunk arch as v1.3, retrained with proven-win soft floor
+(t = max(t, 6.5) on the 18.1% VCF-flagged positions; v1.4's hard 8.0
+saturation had regressed). Bench (honest clock, SEAL_VCF=15 k=11/40k
+mode74): 63/150, strix +55.7 Elo, CI on strix win rate [0.50, 0.656].
+Largest single jump of the campaign (45 -> 63) and it came from LABELS,
+not architecture: teaching value that provable-win positions are
+near-terminal fixed a chunk of the pre-tactical blindness. 5 illegal
+substitutions/150 (normal range). Champion weights: output_trunk5,
+emitted in current/. Next label ideas: mate-distance grading,
+symmetric proven-LOSS ceiling, DAgger positions from recorded games.
+
+## LineNL design (NNUE v3) — one representation, line-level NL
+
+Line = the unit, not the cell. Per maximal line (3 dirs x offset, ~420
+lines): line_acc[K] = sum of its 6-window EW embeddings (windows already
+incrementally maintained); ONE clamp NL per line. Value head =
+MLP(sum_lines clamp(line_acc) + g). Policy(cell) = MLP([its 3 lines'
+clamped acts; global; g0; g1]). Rationale: current per-cell clamp of
+summed line-window embeddings cannot represent cross-line interaction
+(double threats at intersections); 600x capacity on same inputs left
+loss anatomy unchanged -> representational ceiling, not capacity.
+Engine port: line_acc[~420][K] incremental via existing window hooks,
+acc = sum of clamps, diff per changed window. Same blob+parity pipeline.
