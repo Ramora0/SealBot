@@ -343,3 +343,21 @@ double-count.
 Fix plan: SEAL_TRUNK_POLICY knob (value and policy sourced independently)
 + policy_debug binding (engine-vs-python parity for the policy head) +
 2x2 fixed-depth ablation {value: distill|trunk} x {policy: tables|trunk}.
+
+## Post-fix ledger (all timed-vs-distill_frozen 100g/0.1s clean + strix 150g)
+
+champion (legacy val + tables):        +156 h2h | 10/150 strix (-451)
+trunk full blend0 (both heads, fixed): +45  h2h |  5/150 strix (-569)
+trunk blend .05:                       +10  h2h  (saturation-gradient
+                                       theory NOT supported)
+trunk value + tables policy blend0:    -258 h2h (!!) same depth 2.5 --
+                                       not speed; replication running
+1-149 fully accounted: policy parity bug ~230 Elo + ~120 residual
+(the SAME ~110-120 residual as h2h — consistent across benches).
+Fixed-depth: all four head combos equal -> the champion's timed edge is
+ordering-throughput, not decision quality; user correctly rejected the
+31% speed tax as explanation (worth only ~50).
+
+Open: if tv+lp replicates and lv+tp lands high, ordering x eval
+SELF-CONSISTENCY dominates (search steers into positions the leaf model
+must understand; co-trained heads agree, mixed pairs disagree).
