@@ -177,6 +177,8 @@ def main():
     ap.add_argument("--H", type=int, default=H)
     ap.add_argument("--HP", type=int, default=HP)
     ap.add_argument("--human", action="store_true")
+    ap.add_argument("--vcf-labels", action="store_true",
+                    help="saturate value targets on proven forced wins")
     ap.add_argument("--mirror", action="store_true",
                     help="alternate color-mirrored batches (negated target "
                          "and tempo) so the engine can query root-relative")
@@ -189,7 +191,8 @@ def main():
     out_dir = os.path.join(SCRIPT_DIR, args.out)
     os.makedirs(out_dir, exist_ok=True)
     ds = build(os.path.join(out_dir, "trunk_ds.npz"), args.threads,
-               max_shards=args.max_shards, human=args.human)
+               max_shards=args.max_shards, human=args.human,
+               vcf_labels=args.vcf_labels)
     sib = build_siblings(os.path.join(out_dir, "sib_ds.npz"), args.threads)
 
     # joint stream tensors

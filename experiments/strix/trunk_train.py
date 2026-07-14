@@ -89,7 +89,10 @@ def _key(cells, mover, ml, mc):
 
 
 def _shard(paths):
-    npz_path, pkl_path = paths
+    npz_path, pkl_path, flag_path = (paths if len(paths) == 3
+                                     else (*paths, None))
+    vcf_flags = (np.load(flag_path) if flag_path and os.path.exists(flag_path)
+                 else None)
     vals = {}
     if pkl_path is not None:
         for g in pickle.load(open(pkl_path, "rb")):
@@ -113,6 +116,9 @@ def _shard(paths):
         if t is None:
             miss += 1
             continue
+        # Proven forced win for the mover: saturate the value target.
+        if vcf_flags is not None and vcf_flags[i]:
+            t = 8.0
         sl = slice(offs[i], offs[i + 1])
         cand = list(zip(cq[sl].tolist(), cr[sl].tolist()))
         trip, wi, wc, ctrip = extract([tuple(c) for c in cells], int(mover),
@@ -129,20 +135,28 @@ def _shard(paths):
             np.array(mls, np.int32), miss)
 
 
-def build(cache, workers, max_shards=None, human=False):
+def build(cache, workers, max_shards=None, human=False,
+          vcf_labels=False):
     if os.path.exists(cache):
         d = np.load(cache)
         return {k: d[k] for k in d.files}
     import multiprocessing as mp
+    vcf_dir = os.path.join(SCRIPT_DIR, "vcf_targets")
+
+    def _flag(npz, pref):
+        f = os.path.join(vcf_dir, pref +
+                         os.path.basename(npz).replace(".npz", ".npy"))
+        return f if vcf_labels else None
+
     pairs = []
     for npz in sorted(glob.glob(os.path.join(TARGETS, "*.npz"))):
         pkl = os.path.join(DATA, os.path.basename(npz).replace(".npz", ".pkl"))
         if os.path.exists(pkl):
-            pairs.append((npz, pkl))
+            pairs.append((npz, pkl, _flag(npz, "g_")))
     if human:
         for npz in sorted(glob.glob(os.path.join(SCRIPT_DIR, "human_targets",
                                                  "*.npz"))):
-            pairs.append((npz, None))
+            pairs.append((npz, None, _flag(npz, "h_")))
     if max_shards:
         pairs = pairs[:max_shards]
     print(f"building joint dataset from {len(pairs)} shards...", flush=True)
