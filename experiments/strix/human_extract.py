@@ -27,8 +27,8 @@ SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 PARQUET = "/users/PAS2836/leedavis/personal/KrakenBot/distill_100k.parquet"
-PREP_DIR = SCRIPT_DIR / "human_prep"
-OUT_DIR = SCRIPT_DIR / "human_targets"
+PREP_DIR = Path(os.environ.get("HX_PREP_DIR", SCRIPT_DIR / "human_prep"))
+OUT_DIR = Path(os.environ.get("HX_OUT_DIR", SCRIPT_DIR / "human_targets"))
 
 _D2 = [(dq, dr) for dq in range(-2, 3) for dr in range(-2, 3)
        if max(abs(dq), abs(dr), abs(dq + dr)) <= 2 and (dq, dr) != (0, 0)]

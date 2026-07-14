@@ -45,10 +45,15 @@ def _shard(path):
         res, _ = bot.forced_win(game, 6)
         if res == 1:
             flags[i] = 1
-    tag = ("g_" if "policy_targets" in path else "h_") + \
-        os.path.basename(path).replace(".npz", ".npy")
+    tag = _tag(path)
     np.save(os.path.join(OUT, tag), flags)
     return len(metas), int(flags.sum())
+
+
+def _tag(path):
+    pre = ("g_" if "policy_targets" in path
+           else "d_" if "dagger_targets" in path else "h_")
+    return pre + os.path.basename(path).replace(".npz", ".npy")
 
 
 def main():
@@ -59,12 +64,12 @@ def main():
     shards = (sorted(glob.glob(os.path.join(SCRIPT_DIR, "policy_targets",
                                             "*.npz")))
               + sorted(glob.glob(os.path.join(SCRIPT_DIR, "human_targets",
+                                              "*.npz")))
+              + sorted(glob.glob(os.path.join(SCRIPT_DIR, "dagger_targets",
                                               "*.npz"))))
     todo = []
     for p in shards:
-        tag = ("g_" if "policy_targets" in p else "h_") + \
-            os.path.basename(p).replace(".npz", ".npy")
-        if not os.path.exists(os.path.join(OUT, tag)):
+        if not os.path.exists(os.path.join(OUT, _tag(p))):
             todo.append(p)
     print(f"{len(todo)} shards to label")
     import multiprocessing as mp

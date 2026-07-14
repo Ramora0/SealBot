@@ -409,3 +409,23 @@ summed line-window embeddings cannot represent cross-line interaction
 loss anatomy unchanged -> representational ceiling, not capacity.
 Engine port: line_acc[~420][K] incremental via existing window hooks,
 acc = sum of clamps, diff per changed window. Same blob+parity pipeline.
+
+## Paired human-openings bench: the honest strength number
+
+New protocol (user-suggested): 75 openings sampled from human games
+(5-9 stones, turn boundaries, validated vs hexo bounds), each played
+BOTH colors (bench_vs_strix.py --openings). Champion v1.5 build:
+42/150 (28%), strix +163 Elo — vs 63/150 (+56) from the empty board.
+~107 Elo of the empty-board score was opening memorization; the P2=61%
+edge vanishes on diverse starts (22/75 P1, 20/75 P2 — symmetric).
+Pair stats: 41 lose-both / 26 split / 8 win-both.
+Protocol decision: openings bench = development gate; empty board =
+goal scoreboard. Files: openings_prep.py, openings_validate.py,
+openings_human.pkl (172 validated).
+
+Depth probe (12 midgame positions, fixed depth, VCF off): trunk policy
+ordering completes d=4 in 87k nodes vs legacy 100k (-14%); d4->d5 =
+10.7x. EBF 10.7 = sqrt(branching) -> already AT the Knuth-Moore
+perfect-ordering floor; ordering buys ~0.06 ply. Policy Elo = candidate
+selection + root choice, not depth. Horizon must come from VCF + leaf
+foresight (or MCTS-style asymmetry).

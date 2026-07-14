@@ -34,7 +34,7 @@ def hex_dist(a, b):
 
 
 def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
-              strix_times, subs, record=None):
+              strix_times, subs, record=None, opening=None):
     import hexo_rs
     from game import HexGame, Player as SBPlayer
 
@@ -44,6 +44,15 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
     gs = hexo_rs.GameState(gc)
     moves = 0
     seq = []  # (q, r, player_int) in play order
+    if opening:
+        # pre-translated legal sequence, first stone = P1 at (0,0);
+        # GameState(gc) already contains that stone
+        for (q, r, pl) in opening:
+            game.make_move(q, r)
+            seq.append((q, r, pl))
+            moves += 1
+        for (q, r, pl) in opening[1:]:
+            gs.apply_move(q, r)
 
     while not game.game_over and moves < gc_dict["max_moves"]:
         is_hexo_turn = ((hexo_is_a and game.current_player == SBPlayer.A)
@@ -105,7 +114,17 @@ def main():
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--record", action="store_true",
                     help="dump full game sequences to <out>.games.pkl")
+    ap.add_argument("--openings", type=str, default=None,
+                    help="pkl of opening seqs; opening i//2 for game i "
+                         "(paired: each opening played with colors swapped)")
     args = ap.parse_args()
+
+    openings = None
+    if args.openings:
+        import pickle
+        with open(args.openings, "rb") as fh:
+            openings = pickle.load(fh)
+        print(f"{len(openings)} openings loaded (paired play)", flush=True)
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
@@ -151,9 +170,14 @@ def main():
     t_start = time.time()
     try:
         for i in range(args.games):
+            opening = (openings[(i // 2) % len(openings)]
+                       if openings else None)
             results.append(play_game(i, minimax_cpp.MinimaxBot, args.tl, gc,
                                      gc_dict, server.eval_fn, mcts_config,
-                                     strix_times, subs, record=record))
+                                     strix_times, subs, record=record,
+                                     opening=opening))
+            if record is not None and opening is not None:
+                record[-1]["opening_idx"] = (i // 2) % len(openings)
             if (i + 1) % 10 == 0 or i + 1 == args.games:
                 w = sum(r["is_win"] for r in results)
                 l = sum(r["is_loss"] for r in results)
