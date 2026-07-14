@@ -452,3 +452,18 @@ read buildups as "somewhat better for strix", not "lost" (teacher is
 window (danger-position oversampling / DAgger); the -1..-2 window is
 proof-search territory (in-game k=11 vs offline k=16 gap; k=13 already
 measured neutral). Perfect value mimicry alone does not close the gap.
+
+## Blunder autopsy: the specific failure is PROOF BUDGET, not knowledge
+
+blunder_autopsy.py, 40 losses (t5 empty + open). At the LAST AVOIDABLE
+decision (saving pair exists s.t. strix has no proven win at k<=16):
+  CONSTRAINT 33/40 — generous engine (tl 2.0, k=16, 200k) plays a save
+  EVAL_PREF   6/40 — save ranked top-20, search preferred the loser
+  DEAD_EARLY  1/40 — no tactical save 2 turns back
+Saving-pair cells rank MEDIAN #2 in our own policy ordering (mostly #1).
+23/39 saves found at the turn immediately before entry, 16 one earlier.
+=> At the decisive moment the engine KNOWS the candidate move; it lacks
+proof depth/time to distinguish it from the loser. The danger-probe
+"value blindness" story was selection-biased; the binding constraint is
+in-game VCF k=11/40k vs threat horizon k<=16.
+constraint_decomp.py splits the generous delta (clock vs k/budget).
