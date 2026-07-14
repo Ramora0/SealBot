@@ -138,9 +138,10 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
 
     _setup_position(gs);
 
-    // ── Deadline ──
+    // ── Deadline (bit 8 reserves a slice for the post-search veto) ──
+    double tl_search = (vcf_mode & 8) ? time_limit * 0.82 : time_limit;
     _deadline = Clock::now() + std::chrono::microseconds(
-                    static_cast<int64_t>(time_limit * 1000000.0));
+                    static_cast<int64_t>(tl_search * 1000000.0));
 
     if (_cand_set.empty())
         return {0, 0, 0, 0, 1};
@@ -288,6 +289,33 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
 
     smp_stop.store(true);
     for (auto& t : smp_pool) t.join();
+
+    // ── Post-search deep veto (bit 8): the analyzer showed 100% of losses
+    // are deep forced wins we walked into. Prove the CHOSEN move doesn't
+    // hand strix a forced win; if it does, walk down the root ordering.
+    if ((vcf_mode & 8) && turns.size() > 1) {
+        auto veto_deadline = Clock::now() + std::chrono::microseconds(
+            static_cast<int64_t>(time_limit * 0.16 * 1000000.0));
+        std::vector<Turn> order;
+        order.push_back(best_move);
+        for (const auto& t : turns)
+            if (!(t == best_move)) order.push_back(t);
+        int probes = 0;
+        for (const auto& t : order) {
+            if (probes >= 5 || Clock::now() >= veto_deadline) break;
+            UndoStep steps[2];
+            int n = _make_turn(t, steps);
+            bool losing = false;
+            if (!_game_over) {
+                probes++;
+                losing = (forced_win(_cur_player, _moves_left,
+                                     std::max(6, vcf_k - 2),
+                                     nullptr) == 1);
+            }
+            _undo_turn(steps, n);
+            if (!losing) { best_move = t; break; }
+        }
+    }
 
     return {pack_q(best_move.first),  pack_r(best_move.first),
             pack_q(best_move.second), pack_r(best_move.second), 2};
