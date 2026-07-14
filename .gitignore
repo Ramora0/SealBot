@@ -20,3 +20,12 @@ policyroot_frozen/
 experiments/strix/output_trunk/
 experiments/strix/human_prep/
 experiments/strix/human_targets/
+.claude/
+experiments/strix/output_trunk*/
+experiments/strix/output_line*/
+experiments/strix/*.games.pkl
+experiments/strix/autopsy*.pkl
+experiments/strix/danger_probe.pkl
+experiments/strix/dagger_prep/
+experiments/strix/dagger_targets/
+experiments/strix/t5_loss_analysis.txt
