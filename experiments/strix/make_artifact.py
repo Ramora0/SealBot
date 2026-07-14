@@ -356,7 +356,13 @@ SealBot from opening memorization (63/150 vs 42/150 at equal time).</li>
 MCTS is nearly raw policy, so those two strix settings tie within error.</li>
 <li>The 35&times; time-odds figure extrapolates SealBot's +41/doubling
 line ~3 doublings past its measured range; treat it as an order of
-magnitude, not a point estimate.</li></ul>"""
+magnitude, not a point estimate.</li>
+<li><b>Update (July 14 evening):</b> SealBot's curve here is
+per-core-second (single-threaded). The SMP rewrite (root-split YBW,
+SEAL_THREADS=20) scored 35/100 at the 0.44s/64-sims cell vs 20/100
+single-threaded &mdash; +90 Elo from cores &mdash; so the
+consumer-config gap (20 cores vs V100 at equal time) is ~120 Elo,
+not ~208.</li></ul>"""
 
 METHOD = """<h2>Method</h2><ul>
 <li>SealBot: v1.5 champion build (<code>current/</code>, output_trunk5,
