@@ -502,6 +502,7 @@ inline int MinimaxBot::forced_win(int8_t player, int stones_left,
         if (!last_inc) break;
     }
     vcf_nodes = static_cast<int>(V.nodes);
+    vcf_work += V.nodes;
     if (r == 1) {
         if (out) *out = t;
         return 1;

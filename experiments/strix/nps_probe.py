@@ -38,9 +38,10 @@ for p in positions:
     game.moves_left_in_turn = p["moves_left"]
     game.move_count = p["move_count"]
     bot.get_move(game)
-    nodes += bot._nodes
+    nodes += getattr(bot, "work_nodes", bot._nodes)
     depths.append(bot.last_depth)
 dt = time.time() - t0
 mode = os.environ.get("SEAL_POLICY_MODE", "default(2)")
-print(f"mode {mode}: {nodes/dt/1000:.0f}k nps, "
+print(f"mode {mode}: {nodes/dt/1000:.0f}k work-nps "
+      f"(search+solver, all threads), "
       f"avg depth {sum(depths)/len(depths):.2f} over {len(positions)} pos")

@@ -155,6 +155,11 @@ PYBIND11_MODULE(minimax_cpp, m) {
             [](MinimaxBotWrapper& b, int v) { b.engine.vcf_node_budget = v; })
         .def_property_readonly("vcf_nodes",
             [](MinimaxBotWrapper& b) { return b.engine.vcf_nodes; })
+        .def_property_readonly("work_nodes",
+            [](MinimaxBotWrapper& b) {
+                return static_cast<long long>(b.engine._nodes)
+                       + b.engine.vcf_work;
+            })
         .def("__str__", [](const MinimaxBotWrapper&) { return "SealBot"; })
         .def_property("time_limit",
             [](MinimaxBotWrapper& b) { return b.engine.time_limit; },

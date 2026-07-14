@@ -43,6 +43,7 @@ inline void MinimaxBot::_setup_position(const GameState& gs) {
     }
     _player    = _cur_player;
     _nodes     = 0;
+    vcf_work   = 0;
     _ply       = 0;
     last_depth = 0;
     last_score = 0;
@@ -151,6 +152,49 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     if (turns.empty())
         return {0, 0, 0, 0, 1};
 
+    // ── SMP v2 pool: spawned before the VCF probes so worker position
+    // setup overlaps the main thread's attack probe. Worker count is
+    // capped by available work (root children / filter probes), so any
+    // SEAL_THREADS in 1..128 degrades gracefully to what the position
+    // can actually use.
+    SmpJob smp_job;
+    std::vector<std::thread> smp2_pool;
+    const bool smp_pool_on =
+        (threads > 1 && smp_mode != 1 && turns.size() > 1);
+    const bool smp_rootsplit = smp_pool_on && smp_mode == 2;
+    const bool smp_lazy      = smp_pool_on && smp_mode == 3;
+    if (smp_pool_on) {
+        // Mode 3 racers each search the full tree, so every core is
+        // usable; root-split (mode 2) is capped by the root move count.
+        smp_job.W = (smp_mode == 3)
+                        ? threads - 1
+                        : std::min(threads - 1,
+                                   static_cast<int>(turns.size()));
+        while (_helpers.size() < static_cast<size_t>(smp_job.W))
+            _helpers.push_back(std::make_unique<MinimaxBot>());
+        smp2_pool.reserve(smp_job.W);
+        for (int i = 0; i < smp_job.W; i++)
+            smp2_pool.emplace_back(&MinimaxBot::_smp_worker, this,
+                                   _helpers[i].get(), &smp_job, gs,
+                                   _deadline);
+    }
+    // RAII teardown: every exit from get_move (including the VCF attack
+    // probe's early return) must QUIT+join the pool before smp_job dies.
+    struct PoolGuard {
+        SmpJob* j;
+        std::vector<std::thread>* p;
+        MinimaxBot* m;
+        ~PoolGuard() {
+            if (p->empty()) return;
+            j->publish(9);
+            for (auto& t : *p) t.join();
+            for (int i = 0; i < j->W; i++) {
+                m->_nodes   += m->_helpers[i]->_nodes;
+                m->vcf_work += m->_helpers[i]->vcf_work;
+            }
+        }
+    } pool_guard{&smp_job, &smp2_pool, this};
+
     // ── VCF root probes ──
     if (vcf_mode & 1) {
         // Attack: play a proven forced win immediately.
@@ -165,8 +209,11 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     if ((vcf_mode & 2) && turns.size() > 3) {
         // Defense: drop turns after which the opponent has a proven
         // forced win (bounded probe per turn). Keep at least 3 turns.
-        int budget_save = vcf_node_budget;
-        vcf_node_budget = std::min(8000, std::max(800, budget_save / 6));
+        const int fk = vcf_filter_k ? vcf_filter_k : std::max(4, vcf_k / 2);
+        const int fb = vcf_filter_budget
+                           ? vcf_filter_budget
+                           : std::min(8000, std::max(800,
+                                                     vcf_node_budget / 6));
         // Respect the move clock: stop filtering once 40% of the budget is
         // spent (unfiltered turns pass through; the search handles them).
         auto vcf_cutoff = Clock::now() +
@@ -174,19 +221,37 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
                 time_limit * 400000.0));
         std::vector<Turn> safe;
         safe.reserve(turns.size());
-        for (const auto& t : turns) {
-            if (Clock::now() >= vcf_cutoff) { safe.push_back(t); continue; }
-            UndoStep steps[2];
-            int n = _make_turn(t, steps);
-            bool losing = false;
-            if (!_game_over)
-                losing = (forced_win(_cur_player, _moves_left,
-                                     std::max(4, vcf_k / 2),
-                                     nullptr) == 1);
-            _undo_turn(steps, n);
-            if (!losing) safe.push_back(t);
+        if (smp_pool_on) {
+            // Parallel: probes are independent; the atomic index balances
+            // the (wildly variable) probe costs across the pool.
+            std::vector<char> losing(turns.size(), 0);
+            smp_job.turns   = &turns;
+            smp_job.flags   = &losing;
+            smp_job.fk      = fk;
+            smp_job.fbudget = fb;
+            smp_job.cutoff  = vcf_cutoff;
+            smp_job.next.store(0, std::memory_order_relaxed);
+            smp_job.publish(1);
+            _smp_filter_chunk(this, &smp_job);
+            smp_job.wait_done();
+            for (size_t i = 0; i < turns.size(); i++)
+                if (!losing[i]) safe.push_back(turns[i]);
+        } else {
+            int budget_save = vcf_node_budget;
+            vcf_node_budget = fb;
+            for (const auto& t : turns) {
+                if (Clock::now() >= vcf_cutoff) { safe.push_back(t); continue; }
+                UndoStep steps[2];
+                int n = _make_turn(t, steps);
+                bool losing = false;
+                if (!_game_over)
+                    losing = (forced_win(_cur_player, _moves_left, fk,
+                                         nullptr) == 1);
+                _undo_turn(steps, n);
+                if (!losing) safe.push_back(t);
+            }
+            vcf_node_budget = budget_save;
         }
-        vcf_node_budget = budget_save;
         // All-losing => keep the originals (search picks longest resistance).
         if (!safe.empty())
             turns = std::move(safe);
@@ -194,10 +259,10 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
 
     Turn best_move = turns[0];
 
-    // ── Lazy SMP: launch helper searchers sharing the TT ──
+    // ── Lazy SMP (legacy, SEAL_SMP_LEGACY=1): helpers sharing the TT ──
     std::vector<std::thread> smp_pool;
     std::atomic<bool> smp_stop{false};
-    if (threads > 1) {
+    if (threads > 1 && smp_mode == 1) {
         while (_helpers.size() < static_cast<size_t>(threads - 1))
             _helpers.push_back(std::make_unique<MinimaxBot>(time_limit));
         for (int i = 0; i < threads - 1; i++) {
@@ -206,6 +271,18 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
             smp_pool.emplace_back(&MinimaxBot::_helper_loop, h, gs,
                                   _deadline, &smp_stop, i);
         }
+    }
+
+    // ── SMP mode 3: release the pool into lazy iterative deepening on
+    // the FILTERED turn list (workers must not resurrect vetoed turns).
+    // They race the main thread's own ID loop below, deduplicated by the
+    // ABDADA busy table, and are stopped + voted on after it ends.
+    if (smp_lazy) {
+        smp_job.lazy_turns = turns;
+        smp_job.next.store(0, std::memory_order_relaxed);
+        smp_job.timeout.store(false, std::memory_order_relaxed);
+        smp_job.stop.store(false, std::memory_order_relaxed);
+        smp_job.publish(4);
     }
 
     // ── Save state for TimeUp rollback ──
@@ -233,7 +310,9 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     for (int depth = 1; depth <= max_depth; depth++) {
         try {
             int nb4 = _nodes;
-            auto root_result = _search_root(turns, depth);
+            auto root_result = (smp_rootsplit && turns.size() > 1)
+                                   ? _search_root_smp(turns, depth, &smp_job)
+                                   : _search_root(turns, depth);
             Turn result = root_result.first;
             auto& scores = root_result.second;
             best_move  = result;
@@ -290,6 +369,35 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     smp_stop.store(true);
     for (auto& t : smp_pool) t.join();
 
+    // ── SMP mode 3: stop the lazy racers and vote. Deeper completed
+    // iteration wins; proven wins override depth (shortest mate first).
+    if (smp_lazy) {
+        smp_job.stop.store(true, std::memory_order_relaxed);
+        smp_job.wait_done();
+        for (int i = 0; i < smp_job.W; i++) {
+            MinimaxBot* h = _helpers[i].get();
+            if (h->last_depth <= 0) continue;
+            bool won  = maximizing ? (last_score >=  WIN_THRESHOLD)
+                                   : (last_score <= -WIN_THRESHOLD);
+            bool hwon = maximizing ? (h->last_score >=  WIN_THRESHOLD)
+                                   : (h->last_score <= -WIN_THRESHOLD);
+            bool better;
+            if (won || hwon)
+                better = maximizing ? (h->last_score > last_score)
+                                    : (h->last_score < last_score);
+            else
+                better = h->last_depth > last_depth ||
+                         (h->last_depth == last_depth &&
+                          (maximizing ? h->last_score > last_score
+                                      : h->last_score < last_score));
+            if (better) {
+                best_move  = h->_root_partial_best;
+                last_score = h->last_score;
+                last_depth = h->last_depth;
+            }
+        }
+    }
+
     // ── Post-search deep veto (bit 8): the analyzer showed 100% of losses
     // are deep forced wins we walked into. Prove the CHOSEN move doesn't
     // hand strix a forced win; if it does, walk down the root ordering.
@@ -300,27 +408,53 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
         order.push_back(best_move);
         for (const auto& t : turns)
             if (!(t == best_move)) order.push_back(t);
-        int probes = 0;
-        for (const auto& t : order) {
-            if (probes >= 5 || Clock::now() >= veto_deadline) break;
-            UndoStep steps[2];
-            int n = _make_turn(t, steps);
-            bool losing = false;
-            if (!_game_over) {
-                probes++;
-                // Tiered: the search's chosen move gets one DEEP probe
-                // (post-mortems prove our loss entries at k<=16 while
-                // shallow probes miss them); alternatives get k-2.
-                int kk = (probes == 1) ? vcf_k + 3
-                                       : std::max(6, vcf_k - 2);
-                int bsave = vcf_node_budget;
-                if (probes == 1) vcf_node_budget = bsave * 2;
-                losing = (forced_win(_cur_player, _moves_left, kk,
-                                     nullptr) == 1);
-                vcf_node_budget = bsave;
+        if (smp_pool_on) {
+            // Parallel: probe all candidates at once instead of walking
+            // them sequentially — the worst case (chosen move is poisoned,
+            // must vet alternatives) no longer pays 5 probes of latency.
+            // Selection rule (first non-losing in root order) unchanged.
+            if (order.size() > 5) order.resize(5);
+            std::vector<char> vlosing(order.size(), 0);
+            std::vector<char> vdone(order.size(), 0);
+            smp_job.turns  = &order;
+            smp_job.flags  = &vlosing;
+            smp_job.done   = &vdone;
+            smp_job.cutoff = veto_deadline;
+            smp_job.vk1 = vcf_k + 3;
+            smp_job.vk2 = std::max(6, vcf_k - 2);
+            smp_job.vb1 = vcf_node_budget * 2;
+            smp_job.vb2 = vcf_node_budget;
+            smp_job.next.store(0, std::memory_order_relaxed);
+            smp_job.publish(3);
+            _smp_veto_chunk(this, &smp_job);
+            smp_job.wait_done();
+            for (size_t i = 0; i < order.size(); i++) {
+                if (!vdone[i]) break;        // deadline hit: keep current
+                if (!vlosing[i]) { best_move = order[i]; break; }
             }
-            _undo_turn(steps, n);
-            if (!losing) { best_move = t; break; }
+        } else {
+            int probes = 0;
+            for (const auto& t : order) {
+                if (probes >= 5 || Clock::now() >= veto_deadline) break;
+                UndoStep steps[2];
+                int n = _make_turn(t, steps);
+                bool losing = false;
+                if (!_game_over) {
+                    probes++;
+                    // Tiered: the search's chosen move gets one DEEP probe
+                    // (post-mortems prove our loss entries at k<=16 while
+                    // shallow probes miss them); alternatives get k-2.
+                    int kk = (probes == 1) ? vcf_k + 3
+                                           : std::max(6, vcf_k - 2);
+                    int bsave = vcf_node_budget;
+                    if (probes == 1) vcf_node_budget = bsave * 2;
+                    losing = (forced_win(_cur_player, _moves_left, kk,
+                                         nullptr) == 1);
+                    vcf_node_budget = bsave;
+                }
+                _undo_turn(steps, n);
+                if (!losing) { best_move = t; break; }
+            }
         }
     }
 
@@ -569,6 +703,260 @@ MinimaxBot::_search_root(std::vector<Turn>& turns, int depth) {
 }
 
 // ────────────────────────────────────────────────────────────────
+//  SMP v2 — phase-driven worker pool
+// ────────────────────────────────────────────────────────────────
+// Worker body: clone the main bot's config, load the position once, then
+// serve filter/root/veto jobs until QUIT. Board state is private to each
+// worker; a TimeUp mid-search leaves it corrupted, which is safe because
+// a timeout always ends the move and the next get_move re-sets-up.
+inline void MinimaxBot::_smp_worker(MinimaxBot* hb, SmpJob* job, GameState gs,
+                                    Clock::time_point dl) {
+    hb->_clone_config_from(*this);
+    hb->threads = 1;
+    hb->_setup_position(gs);
+    hb->_deadline = dl;
+    hb->_stop_ext = &job->stop;
+    int seen = 0;
+    for (;;) {
+        int kind;
+        {
+            std::unique_lock<std::mutex> lk(job->mu);
+            job->cv.wait(lk, [&] { return job->phase != seen; });
+            seen = job->phase;
+            kind = job->kind;
+        }
+        if (kind == 9) break;
+        if      (kind == 1) _smp_filter_chunk(hb, job);
+        else if (kind == 2) _smp_root_chunk(hb, job);
+        else if (kind == 4) _smp_lazy_chunk(hb, job);
+        else if (kind == 3) {
+            // A root/lazy-phase TimeUp leaves the thrower's board
+            // mid-tree; the veto still runs after one (lazy racers end
+            // on TimeUp every move), so rebuild first.
+            if (job->timeout.load(std::memory_order_relaxed) ||
+                hb->smp_mode == 3)
+                hb->_setup_position(gs);
+            _smp_veto_chunk(hb, job);
+        }
+        {
+            std::lock_guard<std::mutex> lk(job->mu);
+            if (--job->working == 0) job->cv_done.notify_all();
+        }
+    }
+    hb->_stop_ext = nullptr;
+}
+
+inline void MinimaxBot::_smp_filter_chunk(MinimaxBot* b, SmpJob* job) {
+    const auto& turns = *job->turns;
+    int budget_save = b->vcf_node_budget;
+    b->vcf_node_budget = job->fbudget;
+    for (;;) {
+        int i = job->next.fetch_add(1, std::memory_order_relaxed);
+        if (i >= static_cast<int>(turns.size())) break;
+        if (Clock::now() >= job->cutoff) continue;   // unprobed => kept
+        UndoStep steps[2];
+        int n = b->_make_turn(turns[i], steps);
+        bool losing = false;
+        if (!b->_game_over)
+            losing = (b->forced_win(b->_cur_player, b->_moves_left,
+                                    job->fk, nullptr) == 1);
+        b->_undo_turn(steps, n);
+        (*job->flags)[i] = losing ? 1 : 0;
+    }
+    b->vcf_node_budget = budget_save;
+}
+
+inline void MinimaxBot::_smp_root_chunk(MinimaxBot* b, SmpJob* job) {
+    const auto& turns = *job->turns;
+    try {
+        for (;;) {
+            if (job->timeout.load(std::memory_order_relaxed)) break;
+            int i = job->next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= static_cast<int>(turns.size())) break;
+            uint64_t bb = job->bound_bits.load(std::memory_order_relaxed);
+            double bound;
+            std::memcpy(&bound, &bb, 8);
+            UndoStep steps[2];
+            int n = b->_make_turn(turns[i], steps);
+            b->_ply++;
+            double sc;
+            if (b->_game_over)
+                sc = (b->_winner == b->_player) ? (WIN_SCORE - b->_ply)
+                                                : (-WIN_SCORE + b->_ply);
+            else
+                sc = job->maximizing
+                         ? b->_minimax(job->depth - 1, bound, INF_SCORE)
+                         : b->_minimax(job->depth - 1, -INF_SCORE, bound);
+            b->_ply--;
+            b->_undo_turn(steps, n);
+            (*job->scores)[i] = sc;
+            // CAS the shared bound toward the new score (max if maximizing)
+            for (;;) {
+                uint64_t cur = job->bound_bits.load(std::memory_order_relaxed);
+                double c;
+                std::memcpy(&c, &cur, 8);
+                if (job->maximizing ? (sc <= c) : (sc >= c)) break;
+                uint64_t nv;
+                std::memcpy(&nv, &sc, 8);
+                if (job->bound_bits.compare_exchange_weak(cur, nv)) break;
+            }
+            (*job->done)[i] = 1;
+        }
+    } catch (const TimeUp&) {
+        job->timeout.store(true, std::memory_order_relaxed);
+        job->stop.store(true, std::memory_order_relaxed);
+    }
+}
+
+// Lazy racer (SMP mode 3): a full private iterative deepening over the
+// main thread's FILTERED turn list, sharing the TT and deduplicated by
+// the ABDADA busy table. Records its deepest completed iteration on the
+// bot (last_depth / last_score / _root_partial_best) for the vote.
+inline void MinimaxBot::_smp_lazy_chunk(MinimaxBot* b, SmpJob* job) {
+    int lane = job->next.fetch_add(1, std::memory_order_relaxed);
+    std::vector<Turn> turns = job->lazy_turns;   // private copy
+    if (turns.empty()) return;
+    bool maximizing = (b->_cur_player == b->_player);
+    Turn   best{};
+    double best_sc = 0.0;
+    int    best_d  = 0;
+    // Stagger: odd lanes start one ply deeper to diversify the TT.
+    for (int depth = 1 + (lane & 1); depth <= b->max_depth; depth++) {
+        try {
+            auto rr = b->_search_root(turns, depth);
+            auto& scores = rr.second;
+            best   = rr.first;
+            best_d = depth;
+            auto si = scores.find(rr.first);
+            best_sc = (si != scores.end()) ? si->second : 0.0;
+            std::sort(turns.begin(), turns.end(),
+                [&scores, maximizing](const Turn& x, const Turn& y) {
+                    double sx = 0, sy = 0;
+                    auto ix = scores.find(x);
+                    if (ix != scores.end()) sx = ix->second;
+                    auto iy = scores.find(y);
+                    if (iy != scores.end()) sy = iy->second;
+                    return maximizing ? (sx > sy) : (sx < sy);
+                });
+            if (std::abs(best_sc) >= WIN_THRESHOLD) break;
+        } catch (const TimeUp&) {
+            // Harvest the aborted iteration (previous best is searched
+            // first, so its partial winner supersedes at the same depth).
+            if (best_d > 0 && b->_root_partial_valid) {
+                best    = b->_root_partial_best;
+                best_sc = b->_root_partial_score;
+            }
+            break;
+        }
+    }
+    b->_root_partial_best = best;
+    b->last_score = best_sc;
+    b->last_depth = best_d;
+}
+
+inline void MinimaxBot::_smp_veto_chunk(MinimaxBot* b, SmpJob* job) {
+    const auto& order = *job->turns;
+    for (;;) {
+        int i = job->next.fetch_add(1, std::memory_order_relaxed);
+        if (i >= static_cast<int>(order.size())) break;
+        if (Clock::now() >= job->cutoff) continue;   // undone => deadline
+        UndoStep steps[2];
+        int n = b->_make_turn(order[i], steps);
+        bool losing = false;
+        if (!b->_game_over) {
+            int bsave = b->vcf_node_budget;
+            b->vcf_node_budget = (i == 0) ? job->vb1 : job->vb2;
+            losing = (b->forced_win(b->_cur_player, b->_moves_left,
+                                    (i == 0) ? job->vk1 : job->vk2,
+                                    nullptr) == 1);
+            b->vcf_node_budget = bsave;
+        }
+        b->_undo_turn(steps, n);
+        (*job->flags)[i] = losing ? 1 : 0;
+        (*job->done)[i]  = 1;
+    }
+}
+
+// Root split: turns[0] (the previous iteration's best) is searched on the
+// main thread first — YBW-lite — so the shared bound starts tight; the
+// pool then races through the siblings via the atomic index. Each child
+// is searched with the bound snapshot taken at its start: sound (a child
+// better than the true best is never cut), at worst some children return
+// bounds instead of exact scores, exactly like sequential alpha-beta.
+inline std::pair<Turn, flat_map<Turn, double, TurnHash>>
+MinimaxBot::_search_root_smp(std::vector<Turn>& turns, int depth,
+                             SmpJob* job) {
+    bool maximizing = (_cur_player == _player);
+    const size_t N = turns.size();
+    std::vector<double> scores_v(N, 0.0);
+    std::vector<char>   done_v(N, 0);
+
+    _root_partial_valid = false;
+    {
+        _check_time();
+        UndoStep steps[2];
+        int n = _make_turn(turns[0], steps);
+        _ply++;
+        double sc;
+        if (_game_over)
+            sc = (_winner == _player) ? (WIN_SCORE - _ply)
+                                      : (-WIN_SCORE + _ply);
+        else
+            sc = _minimax(depth - 1, -INF_SCORE, INF_SCORE);
+        _ply--;
+        _undo_turn(steps, n);
+        scores_v[0] = sc;
+        done_v[0] = 1;
+        _root_partial_best  = turns[0];
+        _root_partial_score = sc;
+        _root_partial_valid = true;
+    }
+
+    uint64_t bb;
+    std::memcpy(&bb, &scores_v[0], 8);
+    job->bound_bits.store(bb, std::memory_order_relaxed);
+    job->turns  = &turns;
+    job->scores = &scores_v;
+    job->done   = &done_v;
+    job->depth  = depth;
+    job->maximizing = maximizing;
+    job->timeout.store(false, std::memory_order_relaxed);
+    job->stop.store(false, std::memory_order_relaxed);
+    job->next.store(1, std::memory_order_relaxed);
+    job->publish(2);
+    _smp_root_chunk(this, job);
+    job->wait_done();
+
+    // Best over completed children (ascending scan = order-stable ties,
+    // matching the sequential root's first-strictly-better rule).
+    Turn best = turns[0];
+    double best_sc = scores_v[0];
+    for (size_t i = 1; i < N; i++) {
+        if (!done_v[i]) continue;
+        if (maximizing ? (scores_v[i] > best_sc) : (scores_v[i] < best_sc)) {
+            best_sc = scores_v[i];
+            best = turns[i];
+        }
+    }
+
+    if (job->timeout.load(std::memory_order_relaxed)) {
+        // Harvest for the outer TimeUp handler, then unwind through it.
+        _root_partial_best  = best;
+        _root_partial_score = best_sc;
+        _root_partial_valid = true;
+        throw TimeUp{};
+    }
+
+    flat_map<Turn, double, TurnHash> scores;
+    scores.reserve(N);
+    for (size_t i = 0; i < N; i++)
+        scores[turns[i]] = scores_v[i];
+    _tt_store_entry(_tt_key(), depth, _tt_adjust_store(best_sc), TT_EXACT,
+                    best, true);
+    return {best, std::move(scores)};
+}
+
+// ────────────────────────────────────────────────────────────────
 //  Minimax
 // ────────────────────────────────────────────────────────────────
 inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
@@ -766,45 +1154,78 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
 
     Turn best_move{};
     double value;
+    // ABDADA (SMP mode 3): a child another thread is already searching is
+    // deferred to a second pass instead of duplicated; the first child is
+    // exempt (eldest right — guarantees progress). Advisory only.
+    const bool abdada = (_busy != nullptr) && depth >= 2;
+    std::vector<Turn> deferred;
 
     if (maximizing) {
         value = -INF_SCORE;
-        for (const auto& turn : turns) {
-            UndoStep steps[2];
-            int n = _make_turn(turn, steps);
-            _ply++;
-            double cv = _game_over
-                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                : _minimax(depth - 1, alpha, beta);
-            _ply--;
-            _undo_turn(steps, n);
-            if (cv > value) { value = cv; best_move = turn; }
-            alpha = std::max(alpha, value);
-            if (alpha >= beta) {
-                _history[turn.first]  += depth * depth;
-                _history[turn.second] += depth * depth;
-                _store_killer(_ply, turn);
-                break;
+        for (int pass = 0; pass < 2 && alpha < beta; pass++) {
+            const std::vector<Turn>& lst = pass ? deferred : turns;
+            for (size_t ti = 0; ti < lst.size(); ti++) {
+                const Turn& turn = lst[ti];
+                UndoStep steps[2];
+                int n = _make_turn(turn, steps);
+                BusyMark bm;
+                if (abdada && !_game_over) {
+                    uint64_t ck = _tt_key();
+                    if (pass == 0 && ti > 0 && _busy->busy(ck)) {
+                        _undo_turn(steps, n);
+                        deferred.push_back(turn);
+                        continue;
+                    }
+                    bm.set(_busy, ck);
+                }
+                _ply++;
+                double cv = _game_over
+                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                    : _minimax(depth - 1, alpha, beta);
+                _ply--;
+                _undo_turn(steps, n);
+                if (cv > value) { value = cv; best_move = turn; }
+                alpha = std::max(alpha, value);
+                if (alpha >= beta) {
+                    _history[turn.first]  += depth * depth;
+                    _history[turn.second] += depth * depth;
+                    _store_killer(_ply, turn);
+                    break;
+                }
             }
         }
     } else {
         value = INF_SCORE;
-        for (const auto& turn : turns) {
-            UndoStep steps[2];
-            int n = _make_turn(turn, steps);
-            _ply++;
-            double cv = _game_over
-                ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
-                : _minimax(depth - 1, alpha, beta);
-            _ply--;
-            _undo_turn(steps, n);
-            if (cv < value) { value = cv; best_move = turn; }
-            beta = std::min(beta, value);
-            if (alpha >= beta) {
-                _history[turn.first]  += depth * depth;
-                _history[turn.second] += depth * depth;
-                _store_killer(_ply, turn);
-                break;
+        for (int pass = 0; pass < 2 && alpha < beta; pass++) {
+            const std::vector<Turn>& lst = pass ? deferred : turns;
+            for (size_t ti = 0; ti < lst.size(); ti++) {
+                const Turn& turn = lst[ti];
+                UndoStep steps[2];
+                int n = _make_turn(turn, steps);
+                BusyMark bm;
+                if (abdada && !_game_over) {
+                    uint64_t ck = _tt_key();
+                    if (pass == 0 && ti > 0 && _busy->busy(ck)) {
+                        _undo_turn(steps, n);
+                        deferred.push_back(turn);
+                        continue;
+                    }
+                    bm.set(_busy, ck);
+                }
+                _ply++;
+                double cv = _game_over
+                    ? ((_winner == _player) ? (WIN_SCORE - _ply) : (-WIN_SCORE + _ply))
+                    : _minimax(depth - 1, alpha, beta);
+                _ply--;
+                _undo_turn(steps, n);
+                if (cv < value) { value = cv; best_move = turn; }
+                beta = std::min(beta, value);
+                if (alpha >= beta) {
+                    _history[turn.first]  += depth * depth;
+                    _history[turn.second] += depth * depth;
+                    _store_killer(_ply, turn);
+                    break;
+                }
             }
         }
     }

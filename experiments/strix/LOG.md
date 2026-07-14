@@ -493,3 +493,36 @@ Reading for future gains: +40 sealbot Elo at fixed clock = one halving
 of the time handicap. Policy-only strix (<=16 sims) is ALREADY BEATEN
 at 0.3s/turn — the whole remaining gap is the 16->64 search cliff, i.e.
 exactly the proof-budget/foresight territory the autopsy identified.
+
+## SMP rewrite: root-split YBW default -> 35/100 vs strix s64 (+90 Elo from cores)
+
+Threading rewritten (SEAL_SMP_MODE): 2 = root-split ID (YBW) + parallel
+VCF defense-filter/veto probes via a phase-driven worker pool (DEFAULT);
+3 = lazy-SMP racers + ABDADA busy-table deferral + depth/score voting
+(only mode that scales past ~20 root moves); 1 = old lazy SMP.
+threads=1 path untouched: probe 125k work-nps / depth 37.77 identical.
+New work_nodes counter = _nodes + cumulative solver nodes (solver work
+was invisible to nps; nps_probe now reports work-nps).
+
+A/B at T=20, 100g each, s64@0.44 openings 0-49 (single-thread pooled
+baseline 40/200 = 20%):
+  legacy lazy   25/100 (+189 strix)
+  ABDADA lazy   31/100 (+137)
+  ROOT-SPLIT    35/100 (+106)  <- default; z~2.7 vs baseline
+Largest single engine-side gain of the campaign. Consumer-config gap
+(seal@20 cores vs strix@V100, ~0.43s/turn each) is now ~120 Elo.
+Champion env gains SEAL_THREADS=20 on 20-core nodes; single-thread
+remains the reference for per-core-second scaling curves.
+
+Seventh measurement law: on 13k-node trees LINEAR NPS AND NON-REDUNDANT
+PARALLEL WORK ARE MUTUALLY EXCLUSIVE (shared-TT dedup). Legacy = linear
+thread-nodes, zero Elo; root-split = 2.2x work-nps, +0.4 ply, +90 Elo;
+ABDADA = ~1.0x counted work at near-full CPU occupancy (racers TT-skim).
+Utilization metric = process user-time, never nps. Amdahl: the serial
+PV child caps root-split at ~2.5x nodes; recursive PV-splitting or
+speculative depth d+1 are the known next steps if more is needed.
+
+Engine extras: TT auto-sizes with threads (2^22 at T>=8; SEAL_TT_BITS
+override), SEAL_VCF_FK/FB expose defense-filter probe strength,
+_clone_config_from now copies vcf_k (latent bug), RAII pool teardown
+covers the VCF-attack early return (was a std::terminate).

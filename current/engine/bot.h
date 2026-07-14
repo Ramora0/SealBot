@@ -9,10 +9,12 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include "containers.h"
@@ -47,8 +49,21 @@ public:
     // equal to root-only head-to-head, strictly wider refutation coverage.
     // SEAL_POLICY_MODE overrides.
     int    policy_mode   = 74;
-    // Lazy SMP: helper threads sharing the TT (SEAL_THREADS, default 1).
+    // Worker threads (SEAL_THREADS, default 1 = single-threaded champion
+    // behavior). threads > 1 enables SMP v2: root-split iterative
+    // deepening + parallel VCF defense/veto probes, capped by available
+    // work per phase. SEAL_SMP_LEGACY=1 restores the old lazy-SMP mode.
     int    threads       = 1;
+    // SEAL_SMP_MODE: 1 = legacy lazy SMP, 2 = root-split YBW (default:
+    // measured best at T=20 — 35/100 vs strix s64 vs 31/100 for mode 3
+    // and 25/100 legacy; single-thread 20%), 3 = lazy SMP + ABDADA
+    // deferral with voting (only mode that scales past ~20 root moves).
+    int    smp_mode      = 2;
+    bool   smp_legacy    = false;
+    // Defense-filter probe strength (0 = auto: max(4, vcf_k/2) and
+    // clamp(vcf_node_budget/6, 800, 8000)); SEAL_VCF_FK / SEAL_VCF_FB.
+    int    vcf_filter_k      = 0;
+    int    vcf_filter_budget = 0;
     double time_limit;
     int    last_depth  = 0;
     int    _nodes      = 0;
@@ -68,7 +83,35 @@ public:
     {
         ensure_tables();
         if (const char* e = std::getenv("SEAL_THREADS"))
-            threads = std::max(1, std::atoi(e));
+            threads = std::max(1, std::min(128, std::atoi(e)));
+        if (const char* e = std::getenv("SEAL_SMP_LEGACY"))
+            smp_legacy = std::atoi(e) != 0;
+        if (const char* e = std::getenv("SEAL_SMP_MODE"))
+            smp_mode = std::max(1, std::min(3, std::atoi(e)));
+        if (smp_legacy) smp_mode = 1;
+        if (threads > 1 && smp_mode == 3) {
+            _busy_tbl = std::make_shared<BusyTable>();
+            _busy = _busy_tbl.get();
+        }
+        {
+            // TT sizing: more searchers keep more positions in flight, so
+            // grow the shared table with the pool. threads == 1 keeps the
+            // champion's 2^20 exactly. SEAL_TT_BITS overrides.
+            int tt_bits = 20;
+            if (threads >= 32)     tt_bits = 23;
+            else if (threads >= 8) tt_bits = 22;
+            if (const char* e = std::getenv("SEAL_TT_BITS"))
+                tt_bits = std::max(16, std::min(26, std::atoi(e)));
+            if (tt_bits != 20) {
+                _tt = std::make_shared<std::vector<TTEntry>>(
+                          static_cast<size_t>(1) << tt_bits);
+                _tt_mask = (static_cast<uint64_t>(1) << tt_bits) - 1;
+            }
+        }
+        if (const char* e = std::getenv("SEAL_VCF_FK"))
+            vcf_filter_k = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_VCF_FB"))
+            vcf_filter_budget = std::atoi(e);
         if (const char* e = std::getenv("SEAL_VCF"))
             vcf_mode = std::atoi(e);
         if (const char* e = std::getenv("SEAL_VCF_BUDGET"))
@@ -163,6 +206,7 @@ public:
     // 10 ms; raising it to 50000 (~100 ms worst) finds ~8% more deep wins.
     int vcf_node_budget = 5000;
     int vcf_nodes       = 0;       // nodes used by the last forced_win call
+    long long vcf_work  = 0;       // cumulative solver nodes this move
     // Search integration bits (SEAL_VCF): 1 = root attack probe (play a
     // proven win instantly), 2 = root defense filter (drop turns after
     // which the opponent has a proven forced win), 4 = interior attack
@@ -357,6 +401,105 @@ private:
     std::vector<std::unique_ptr<MinimaxBot>> _helpers;
     std::atomic<bool>* _stop_ext = nullptr;  // set on helpers by the main bot
 
+    // ── ABDADA busy table (SMP mode 3): advisory side table marking
+    // positions some thread is currently searching, so others defer them
+    // to a second pass instead of duplicating the subtree. Hash-indexed,
+    // collisions and saturation just cost a little dedup — correctness
+    // never depends on it. tag = key bits 40..63, count in the low byte.
+    struct BusyTable {
+        static constexpr uint32_t MASK = (1u << 16) - 1;
+        std::vector<std::atomic<uint32_t>> slots;
+        BusyTable() : slots(size_t(1) << 16) {
+            for (auto& s : slots) s.store(0, std::memory_order_relaxed);
+        }
+        static uint32_t tag(uint64_t key) {
+            return static_cast<uint32_t>(key >> 40) & 0xffffffu;
+        }
+        bool busy(uint64_t key) const {
+            uint32_t v = slots[key & MASK].load(std::memory_order_relaxed);
+            return (v >> 8) == tag(key) && (v & 0xff) != 0;
+        }
+        bool enter(uint64_t key) {   // returns whether a mark was placed
+            auto& s = slots[key & MASK];
+            uint32_t v = s.load(std::memory_order_relaxed);
+            for (int t = 0; t < 2; t++) {
+                uint32_t nv;
+                if ((v & 0xff) == 0)           nv = (tag(key) << 8) | 1;
+                else if ((v >> 8) == tag(key)) {
+                    if ((v & 0xff) == 0xff) return false;
+                    nv = v + 1;
+                } else return false;           // collision: give up
+                if (s.compare_exchange_weak(v, nv, std::memory_order_relaxed))
+                    return true;
+            }
+            return false;
+        }
+        void leave(uint64_t key) {
+            auto& s = slots[key & MASK];
+            uint32_t v = s.load(std::memory_order_relaxed);
+            for (int t = 0; t < 2; t++) {
+                if ((v >> 8) != tag(key) || (v & 0xff) == 0) return;
+                if (s.compare_exchange_weak(v, v - 1,
+                                            std::memory_order_relaxed))
+                    return;
+            }
+        }
+    };
+    struct BusyMark {   // RAII: leave() runs even through a TimeUp unwind
+        BusyTable* t = nullptr;
+        uint64_t   k = 0;
+        bool       on = false;
+        void set(BusyTable* tbl, uint64_t key) {
+            t = tbl; k = key; on = tbl->enter(key);
+        }
+        ~BusyMark() { if (on) t->leave(k); }
+    };
+    std::shared_ptr<BusyTable> _busy_tbl;
+    BusyTable* _busy = nullptr;
+
+    // ── SMP v2: per-move worker pool (root-split + parallel VCF probes).
+    // Workers are _helpers clones; work is handed out via an atomic index
+    // (self-balancing across wildly uneven item costs); the shared
+    // XOR-validated TT is the only cross-thread search state. The pool is
+    // phase-driven: the main thread publishes a job kind, participates in
+    // the work itself, then waits on the done-latch.
+    struct SmpJob {
+        std::mutex mu;
+        std::condition_variable cv, cv_done;
+        int phase = 0, working = 0;
+        int kind  = 0;         // 1=filter 2=root 3=veto 4=lazy-ID 9=quit
+        std::vector<Turn> lazy_turns;  // mode-3 snapshot of filtered turns
+        int W     = 0;                 // worker count (excludes main)
+        const std::vector<Turn>* turns = nullptr;
+        std::atomic<int>  next{0};     // shared work index
+        std::atomic<bool> stop{false};     // aborts in-flight searches
+        std::atomic<bool> timeout{false};  // any thread hit the deadline
+        std::vector<char>* flags = nullptr;   // losing[i]
+        std::vector<char>* done  = nullptr;   // completed[i]
+        Clock::time_point  cutoff;            // filter/veto wall cutoff
+        int fk = 0, fbudget = 0;              // filter probe params
+        int vk1 = 0, vk2 = 0, vb1 = 0, vb2 = 0;  // veto probe params
+        // root split
+        int  depth = 0;
+        bool maximizing = true;
+        std::atomic<uint64_t> bound_bits{0};  // shared alpha (double bits)
+        std::vector<double>* scores = nullptr;
+
+        void publish(int k) {
+            {
+                std::lock_guard<std::mutex> l(mu);
+                kind = k;
+                working = W;
+                phase++;
+            }
+            cv.notify_all();
+        }
+        void wait_done() {
+            std::unique_lock<std::mutex> l(mu);
+            cv_done.wait(l, [&] { return working == 0; });
+        }
+    };
+
     // Copy search-relevant config into a helper (tables/weights shared).
     void _clone_config_from(const MinimaxBot& m) {
         _pv          = m._pv;
@@ -371,6 +514,12 @@ private:
         max_depth     = m.max_depth;
         vcf_mode      = m.vcf_mode;
         vcf_node_budget = m.vcf_node_budget;
+        vcf_k         = m.vcf_k;
+        vcf_filter_k      = m.vcf_filter_k;
+        vcf_filter_budget = m.vcf_filter_budget;
+        smp_mode      = m.smp_mode;
+        _busy_tbl     = m._busy_tbl;   // share the ABDADA table
+        _busy         = m._busy;
         _use_trunk    = m._use_trunk;
         _trunk_policy = m._trunk_policy;
         _need_acc2    = m._need_acc2;
@@ -729,6 +878,16 @@ private:
     void _setup_position(const GameState& gs);
     void _helper_loop(GameState gs, Clock::time_point deadline,
                       std::atomic<bool>* stop, int offset);
+
+    // ── SMP v2 (implemented in search.h) ──
+    void _smp_worker(MinimaxBot* hb, SmpJob* job, GameState gs,
+                     Clock::time_point dl);
+    static void _smp_filter_chunk(MinimaxBot* b, SmpJob* job);
+    static void _smp_root_chunk(MinimaxBot* b, SmpJob* job);
+    static void _smp_veto_chunk(MinimaxBot* b, SmpJob* job);
+    static void _smp_lazy_chunk(MinimaxBot* b, SmpJob* job);
+    std::pair<Turn, flat_map<Turn, double, TurnHash>>
+        _search_root_smp(std::vector<Turn>& turns, int depth, SmpJob* job);
 };
 
 } // namespace opt
