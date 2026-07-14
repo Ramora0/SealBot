@@ -137,7 +137,7 @@ def _shard(paths):
 
 
 def build(cache, workers, max_shards=None, human=False,
-          vcf_labels=False):
+          vcf_labels=False, dagger=False):
     if os.path.exists(cache):
         d = np.load(cache)
         return {k: d[k] for k in d.files}
@@ -158,6 +158,10 @@ def build(cache, workers, max_shards=None, human=False,
         for npz in sorted(glob.glob(os.path.join(SCRIPT_DIR, "human_targets",
                                                  "*.npz"))):
             pairs.append((npz, None, _flag(npz, "h_")))
+    if dagger:
+        for npz in sorted(glob.glob(os.path.join(SCRIPT_DIR, "dagger_targets",
+                                                 "*.npz"))):
+            pairs.append((npz, None, _flag(npz, "d_")))
     if max_shards:
         pairs = pairs[:max_shards]
     print(f"building joint dataset from {len(pairs)} shards...", flush=True)

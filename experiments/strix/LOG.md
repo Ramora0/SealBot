@@ -429,3 +429,26 @@ ordering completes d=4 in 87k nodes vs legacy 100k (-14%); d4->d5 =
 perfect-ordering floor; ordering buys ~0.06 ply. Policy Elo = candidate
 selection + root choice, not depth. Horizon must come from VCF + leaf
 foresight (or MCTS-style asymmetry).
+
+## Danger probe: teacher-vs-student value at provably-lost entries
+
+danger_probe.py, 195 recorded losses (t5 empty + t5 open), all with
+VCF-provable strix wins at entry (k<=16/60k). Values strix-POV, +-1:
+
+  turns-before  teacher mean  student mean   P(T>.6)  P(S>.6)
+       0          +0.78         +0.63          .75      .62
+      -1          +0.53         +0.38          .50      .31
+      -2          +0.40         +0.29          .36      .26
+      -3          +0.34         +0.23          .28      .17
+      -4          +0.31         +0.17          .28      .14
+      -5          +0.25         +0.13          .19      .11
+
+Reading: teacher's raw value carries a real early-warning lean 4-5
+turns out (mean +0.3, alarm >0.6 fires ~25%); the v1.5 student captures
+~60% of the mean and ~half the alarm rate. So the distillation residual
+at danger positions is real Elo — but even perfect distillation would
+read buildups as "somewhat better for strix", not "lost" (teacher is
++0.78 even at PROVABLE entry). Conclusion: value work targets the -3..-5
+window (danger-position oversampling / DAgger); the -1..-2 window is
+proof-search territory (in-game k=11 vs offline k=16 gap; k=13 already
+measured neutral). Perfect value mimicry alone does not close the gap.
