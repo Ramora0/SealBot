@@ -375,3 +375,11 @@ positional losses -> remaining gap is PRE-tactical (value must smell
 danger before it's provable). v1.4 training with proven-win-saturated
 targets (18.1% of 981k positions). Note: the transient 34/150 result was
 disqualified (defense filter overshot the clock pre-honesty-patch).
+
+## v1.4 rejected: hard label saturation regressed (34 vs 45/150)
+
+Setting 18% of targets to exactly 8.0 flattened win-gradation — search
+needs won-cleanly > won-eventually contrasts. If revisited: soft floor
+(t = max(t, 6.5)) or mate-distance-graded targets, not a constant.
+Current champion build: trunk3 (K=64) + mode74 + SEAL_VCF=15 (tiered
+veto) + k=11/40k = 45/150 (gap -146).
