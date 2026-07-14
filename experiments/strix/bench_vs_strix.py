@@ -34,7 +34,7 @@ def hex_dist(a, b):
 
 
 def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
-              strix_times, subs):
+              strix_times, subs, record=None):
     import hexo_rs
     from game import HexGame, Player as SBPlayer
 
@@ -43,12 +43,14 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
     game = HexGame(win_length=gc_dict["win_length"])
     gs = hexo_rs.GameState(gc)
     moves = 0
+    seq = []  # (q, r, player_int) in play order
 
     while not game.game_over and moves < gc_dict["max_moves"]:
         is_hexo_turn = ((hexo_is_a and game.current_player == SBPlayer.A)
                         or (not hexo_is_a and game.current_player == SBPlayer.B))
         if game.move_count == 0:
             game.make_move(0, 0)
+            seq.append((0, 0, 1))
             moves += 1
             gs = hexo_rs.GameState(gc)
             continue
@@ -57,6 +59,8 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
             action, _ = hexo_rs.gumbel_mcts(gs, eval_fn, mcts_config)
             strix_times.append(time.perf_counter() - t0)
             gs.apply_move(action[0], action[1])
+            seq.append((action[0], action[1],
+                        1 if game.current_player == SBPlayer.A else 2))
             game.make_move(action[0], action[1])
             moves += 1
         else:
@@ -71,6 +75,8 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
                     sub = min(legal, key=lambda c: (hex_dist(c, m), c))
                     subs.append((game_idx, m, sub))
                     m = sub
+                seq.append((m[0], m[1],
+                            1 if game.current_player == SBPlayer.A else 2))
                 game.make_move(m[0], m[1])
                 moves += 1
                 gs.apply_move(m[0], m[1])
@@ -79,6 +85,11 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
         (hexo_is_a and game.winner == SBPlayer.A)
         or (not hexo_is_a and game.winner == SBPlayer.B))
     is_draw = game.winner == SBPlayer.NONE
+    if record is not None:
+        record.append({"game_idx": game_idx, "hexo_is_a": hexo_is_a,
+                       "seq": seq, "winner": int(game.winner.value)
+                       if game.winner != SBPlayer.NONE else 0,
+                       "sealbot_won": bool(is_win)})
     return {"moves": moves, "is_win": is_win,
             "is_loss": (not is_win) and (not is_draw), "is_draw": is_draw}
 
@@ -92,6 +103,8 @@ def main():
     ap.add_argument("--sims", type=int, default=64)
     ap.add_argument("--m-actions", type=int, default=16)
     ap.add_argument("--out", type=str, default=None)
+    ap.add_argument("--record", action="store_true",
+                    help="dump full game sequences to <out>.games.pkl")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -134,12 +147,13 @@ def main():
                                      c_visit=50, c_scale=1.0)
 
     strix_times, subs, results = [], [], []
+    record = [] if args.record else None
     t_start = time.time()
     try:
         for i in range(args.games):
             results.append(play_game(i, minimax_cpp.MinimaxBot, args.tl, gc,
                                      gc_dict, server.eval_fn, mcts_config,
-                                     strix_times, subs))
+                                     strix_times, subs, record=record))
             if (i + 1) % 10 == 0 or i + 1 == args.games:
                 w = sum(r["is_win"] for r in results)
                 l = sum(r["is_loss"] for r in results)
@@ -148,6 +162,12 @@ def main():
                       flush=True)
     finally:
         server.stop()
+
+    if record is not None and args.out:
+        import pickle
+        with open(args.out + ".games.pkl", "wb") as fh:
+            pickle.dump(record, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"recorded {len(record)} games -> {args.out}.games.pkl")
 
     wins = sum(r["is_win"] for r in results)
     losses = sum(r["is_loss"] for r in results)
