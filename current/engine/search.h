@@ -165,10 +165,16 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
         // Defense: drop turns after which the opponent has a proven
         // forced win (bounded probe per turn). Keep at least 3 turns.
         int budget_save = vcf_node_budget;
-        vcf_node_budget = std::max(800, budget_save / 6);
+        vcf_node_budget = std::min(3000, std::max(800, budget_save / 6));
+        // Respect the move clock: stop filtering once 40% of the budget is
+        // spent (unfiltered turns pass through; the search handles them).
+        auto vcf_cutoff = Clock::now() +
+            std::chrono::microseconds(static_cast<int64_t>(
+                time_limit * 400000.0));
         std::vector<Turn> safe;
         safe.reserve(turns.size());
         for (const auto& t : turns) {
+            if (Clock::now() >= vcf_cutoff) { safe.push_back(t); continue; }
             UndoStep steps[2];
             int n = _make_turn(t, steps);
             bool losing = false;
