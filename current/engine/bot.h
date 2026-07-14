@@ -8,8 +8,12 @@
  */
 #pragma once
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <thread>
 
 #include "containers.h"
 #include "tables.h"
@@ -43,6 +47,8 @@ public:
     // equal to root-only head-to-head, strictly wider refutation coverage.
     // SEAL_POLICY_MODE overrides.
     int    policy_mode   = 74;
+    // Lazy SMP: helper threads sharing the TT (SEAL_THREADS, default 1).
+    int    threads       = 1;
     double time_limit;
     int    last_depth  = 0;
     int    _nodes      = 0;
@@ -52,13 +58,17 @@ public:
 
     // ── Constructors ──
     MinimaxBot() : time_limit(0.05), _rng(std::random_device{}()),
-                   _tt(1 << 20), _tt_mask((1 << 20) - 1) { ensure_tables(); }
+                   _tt(std::make_shared<std::vector<TTEntry>>(1 << 20)),
+                   _tt_mask((1 << 20) - 1) { ensure_tables(); }
 
     explicit MinimaxBot(double tl)
         : time_limit(tl), _rng(std::random_device{}()),
-          _tt(1 << 20), _tt_mask((1 << 20) - 1)
+          _tt(std::make_shared<std::vector<TTEntry>>(1 << 20)),
+          _tt_mask((1 << 20) - 1)
     {
         ensure_tables();
+        if (const char* e = std::getenv("SEAL_THREADS"))
+            threads = std::max(1, std::atoi(e));
         if (const char* e = std::getenv("SEAL_CAND_CAP"))
             cand_cap = std::atoi(e);
         if (const char* e = std::getenv("SEAL_ROOT_CAP"))
@@ -241,30 +251,60 @@ private:
         return score;
     }
 
-    // ── Transposition table (fixed-size, direct-mapped, always-overwrite) ──
-    std::vector<TTEntry> _tt;
+    // ── Transposition table (fixed-size, direct-mapped, SHARED across
+    // lazy-SMP helpers via shared_ptr; lock-free XOR-consistent entries) ──
+    std::shared_ptr<std::vector<TTEntry>> _tt;
     uint64_t _tt_mask = 0;
 
-    TTEntry* _tt_probe(uint64_t full_key) {
-        uint32_t verify = static_cast<uint32_t>(full_key >> 32);
-        auto& e = _tt[static_cast<size_t>(full_key) & _tt_mask];
-        return (e.key == verify) ? &e : nullptr;
+    bool _tt_probe(uint64_t full_key, TTView& out) const {
+        const TTEntry& e = (*_tt)[static_cast<size_t>(full_key) & _tt_mask];
+        uint64_t b = e.b, c = e.c;
+        uint64_t meta = e.a ^ b ^ c;
+        if (static_cast<uint32_t>(meta) !=
+            static_cast<uint32_t>(full_key >> 32))
+            return false;
+        out.depth    = static_cast<int16_t>(meta >> 32);
+        out.flag     = static_cast<int8_t>((meta >> 48) & 0xff);
+        out.has_move = ((meta >> 56) & 1) != 0;
+        std::memcpy(&out.score, &b, 8);
+        int8_t q1 = static_cast<int8_t>(c & 0xff);
+        int8_t r1 = static_cast<int8_t>((c >> 8) & 0xff);
+        int8_t q2 = static_cast<int8_t>((c >> 16) & 0xff);
+        int8_t r2 = static_cast<int8_t>((c >> 24) & 0xff);
+        out.move = {pack(q1, r1), pack(q2, r2)};
+        return true;
     }
 
     void _tt_store_entry(uint64_t full_key, int depth, double score,
                          int8_t flag, const Turn& move, bool has_move) {
-        auto& e    = _tt[static_cast<size_t>(full_key) & _tt_mask];
+        TTEntry& e = (*_tt)[static_cast<size_t>(full_key) & _tt_mask];
+        uint64_t b0 = e.b, c0 = e.c;
+        uint64_t meta0 = e.a ^ b0 ^ c0;
         uint32_t verify = static_cast<uint32_t>(full_key >> 32);
-        // Depth-preferred replacement: keep deeper entries for the same position;
-        // always replace if the slot holds a different position.
-        if (e.key != verify || depth >= e.depth) {
-            e.key      = verify;
-            e.depth    = static_cast<int16_t>(depth);
-            e.score    = score;
-            e.flag     = flag;
-            e.move     = move;
-            e.has_move = has_move;
-        }
+        // Depth-preferred replacement: keep deeper entries for the same
+        // position; always replace a different position.
+        if (static_cast<uint32_t>(meta0) == verify &&
+            depth < static_cast<int16_t>(meta0 >> 32))
+            return;
+        uint64_t b;
+        std::memcpy(&b, &score, 8);
+        uint64_t c =
+            (static_cast<uint64_t>(static_cast<uint8_t>(
+                 static_cast<int8_t>(pack_q(move.first))))) |
+            (static_cast<uint64_t>(static_cast<uint8_t>(
+                 static_cast<int8_t>(pack_r(move.first)))) << 8) |
+            (static_cast<uint64_t>(static_cast<uint8_t>(
+                 static_cast<int8_t>(pack_q(move.second)))) << 16) |
+            (static_cast<uint64_t>(static_cast<uint8_t>(
+                 static_cast<int8_t>(pack_r(move.second)))) << 24);
+        uint64_t meta = static_cast<uint64_t>(verify) |
+            (static_cast<uint64_t>(static_cast<uint16_t>(
+                 static_cast<int16_t>(depth))) << 32) |
+            (static_cast<uint64_t>(static_cast<uint8_t>(flag)) << 48) |
+            (static_cast<uint64_t>(has_move ? 1 : 0) << 56);
+        e.b = b;
+        e.c = c;
+        e.a = meta ^ b ^ c;
     }
 
     // ── History table ──
@@ -283,6 +323,35 @@ private:
 
     // ── RNG ──
     std::mt19937 _rng;
+
+    // ── Partial root-iteration harvest (see _search_root) ──
+    Turn   _root_partial_best{};
+    double _root_partial_score = 0;
+    bool   _root_partial_valid = false;
+
+    // ── Lazy SMP state ──
+    std::vector<std::unique_ptr<MinimaxBot>> _helpers;
+    std::atomic<bool>* _stop_ext = nullptr;  // set on helpers by the main bot
+
+    // Copy search-relevant config into a helper (tables/weights shared).
+    void _clone_config_from(const MinimaxBot& m) {
+        _pv          = m._pv;
+        _eval_length = m._eval_length;
+        _build_eval_tables();
+        cand_cap      = m.cand_cap;
+        root_cand_cap = m.root_cand_cap;
+        delta_keep    = m.delta_keep;
+        policy_mode   = m.policy_mode;
+        pair_moves    = m.pair_moves;
+        no_cand_cap   = m.no_cand_cap;
+        max_depth     = m.max_depth;
+        _use_trunk    = m._use_trunk;
+        _trunk_policy = m._trunk_policy;
+        _need_acc2    = m._need_acc2;
+        _trunk_blend  = m._trunk_blend;
+        _tt           = m._tt;      // share the table
+        _tt_mask      = m._tt_mask;
+    }
 
     // ── Saved state for TimeUp rollback ──
     struct SavedArrays {
@@ -310,8 +379,12 @@ private:
         // Trunk nodes are ~1.5x slower; check the clock more often so the
         // overshoot past the deadline stays comparable to the legacy net.
         int mask = _use_trunk ? 255 : 1023;
-        if ((_nodes & mask) == 0 && Clock::now() >= _deadline)
-            throw TimeUp{};
+        if ((_nodes & mask) == 0) {
+            if (_stop_ext && _stop_ext->load(std::memory_order_relaxed))
+                throw TimeUp{};
+            if (Clock::now() >= _deadline)
+                throw TimeUp{};
+        }
     }
 
     inline uint64_t _tt_key() const {
@@ -619,6 +692,10 @@ private:
     std::pair<Turn, flat_map<Turn, double, TurnHash>>
         _search_root(std::vector<Turn>& turns, int depth);
     double _minimax(int depth, double alpha, double beta);
+
+    void _setup_position(const GameState& gs);
+    void _helper_loop(GameState gs, Clock::time_point deadline,
+                      std::atomic<bool>* stop, int offset);
 };
 
 } // namespace opt

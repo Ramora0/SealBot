@@ -10,10 +10,9 @@ namespace opt {
 // ────────────────────────────────────────────────────────────────
 //  Main entry point
 // ────────────────────────────────────────────────────────────────
-inline MoveResult MinimaxBot::get_move(const GameState& gs) {
-    if (gs.cells.empty())
-        return {0, 0, 0, 0, 1};
-
+// Position loading shared by get_move and lazy-SMP helpers: board arrays,
+// zobrist, windows, eval accumulators, candidates.
+inline void MinimaxBot::_setup_position(const GameState& gs) {
     // ── Clear arrays ──
     std::memset(_board, 0, sizeof(_board));
     std::memset(_wc, 0, sizeof(_wc));
@@ -36,10 +35,6 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     _move_count = gs.move_count;
     _winner     = P_NONE;
     _game_over  = false;
-
-    // ── Deadline ──
-    _deadline = Clock::now() + std::chrono::microseconds(
-                    static_cast<int64_t>(time_limit * 1000000.0));
 
     // ── Player tracking ──
     if (_cur_player != _player) {
@@ -101,6 +96,51 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
                 _cand_set.insert(pack(nq, nr));
         }
     }
+}
+
+// Lazy-SMP helper: same position, own killers/history/board state, SHARED
+// transposition table. Runs its own iterative deepening until deadline or
+// the main thread's stop flag; its value is the TT entries it leaves.
+inline void MinimaxBot::_helper_loop(GameState gs, Clock::time_point deadline,
+                                     std::atomic<bool>* stop, int offset) {
+    _deadline = deadline;
+    _stop_ext = stop;
+    _setup_position(gs);
+    if (_cand_set.empty()) { _stop_ext = nullptr; return; }
+    bool maximizing = (_cur_player == _player);
+    auto turns = _generate_turns();
+    if (turns.empty()) { _stop_ext = nullptr; return; }
+    // Stagger: odd helpers start one ply deeper to diversify the shared TT.
+    for (int depth = 1 + (offset & 1); depth <= max_depth; depth++) {
+        try {
+            auto rr = _search_root(turns, depth);
+            auto& scores = rr.second;
+            std::sort(turns.begin(), turns.end(),
+                [&scores, maximizing](const Turn& a, const Turn& b) {
+                    double sa = 0, sb = 0;
+                    auto ia = scores.find(a); if (ia != scores.end()) sa = ia->second;
+                    auto ib = scores.find(b); if (ib != scores.end()) sb = ib->second;
+                    return maximizing ? (sa > sb) : (sa < sb);
+                });
+            auto si = scores.find(rr.first);
+            if (si != scores.end() && std::abs(si->second) >= WIN_THRESHOLD)
+                break;
+        } catch (const TimeUp&) {
+            break;
+        }
+    }
+    _stop_ext = nullptr;
+}
+
+inline MoveResult MinimaxBot::get_move(const GameState& gs) {
+    if (gs.cells.empty())
+        return {0, 0, 0, 0, 1};
+
+    _setup_position(gs);
+
+    // ── Deadline ──
+    _deadline = Clock::now() + std::chrono::microseconds(
+                    static_cast<int64_t>(time_limit * 1000000.0));
 
     if (_cand_set.empty())
         return {0, 0, 0, 0, 1};
@@ -111,6 +151,20 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
         return {0, 0, 0, 0, 1};
 
     Turn best_move = turns[0];
+
+    // ── Lazy SMP: launch helper searchers sharing the TT ──
+    std::vector<std::thread> smp_pool;
+    std::atomic<bool> smp_stop{false};
+    if (threads > 1) {
+        while (_helpers.size() < static_cast<size_t>(threads - 1))
+            _helpers.push_back(std::make_unique<MinimaxBot>(time_limit));
+        for (int i = 0; i < threads - 1; i++) {
+            MinimaxBot* h = _helpers[i].get();
+            h->_clone_config_from(*this);
+            smp_pool.emplace_back(&MinimaxBot::_helper_loop, h, gs,
+                                  _deadline, &smp_stop, i);
+        }
+    }
 
     // ── Save state for TimeUp rollback ──
     if (!_saved) _saved = std::make_unique<SavedArrays>();
@@ -157,6 +211,14 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
                 });
             if (std::abs(last_score) >= WIN_THRESHOLD) break;
         } catch (const TimeUp&) {
+            // Harvest the aborted iteration: its best fully-searched move
+            // supersedes the previous iteration's choice (the previous best
+            // is always searched first, so this is monotone information).
+            if (_root_partial_valid) {
+                best_move  = _root_partial_best;
+                last_score = _root_partial_score;
+                _root_partial_valid = false;
+            }
             std::memcpy(_board, _saved->board, sizeof(_board));
             std::memcpy(_wc, _saved->wc, sizeof(_wc));
             std::memcpy(_wp, _saved->wp, sizeof(_wp));
@@ -182,6 +244,9 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
             break;
         }
     }
+
+    smp_stop.store(true);
+    for (auto& t : smp_pool) t.join();
 
     return {pack_q(best_move.first),  pack_r(best_move.first),
             pack_q(best_move.second), pack_r(best_move.second), 2};
@@ -221,11 +286,12 @@ inline std::vector<PVStep> MinimaxBot::extract_pv() {
         }
 
         // 2. TT entry with a best move
-        TTEntry* tte = _tt_probe(ttk);
-        if (tte && tte->has_move) {
-            double sc = _tt_adjust_load(tte->score);
+        TTView tv{};
+        bool tth = _tt_probe(ttk, tv);
+        if (tth && tv.has_move) {
+            double sc = _tt_adjust_load(tv.score);
             if (std::abs(sc) < WIN_THRESHOLD) break;
-            Turn best_turn = tte->move;
+            Turn best_turn = tv.move;
             undo_stack.push_back({});
             auto& back = undo_stack.back();
             back.second = _make_turn(best_turn, back.first);
@@ -263,10 +329,10 @@ inline std::vector<PVStep> MinimaxBot::extract_pv() {
                 continue;
             }
             // Check TT for score after this response
-            TTEntry* tt2 = _tt_probe(_tt_key());
+            TTView tv2{};
             double surv;
-            if (tt2) {
-                surv = _tt_adjust_load(tt2->score);
+            if (_tt_probe(_tt_key(), tv2)) {
+                surv = _tt_adjust_load(tv2.score);
             } else {
                 // No TT — use instant win check as proxy
                 auto [ofw, _owt] = _find_instant_win(opponent);
@@ -397,6 +463,7 @@ MinimaxBot::_search_root(std::vector<Turn>& turns, int depth) {
     flat_map<Turn, double, TurnHash> scores;
     scores.reserve(turns.size());
 
+    _root_partial_valid = false;
     for (const auto& turn : turns) {
         _check_time();
         UndoStep steps[2];
@@ -413,6 +480,11 @@ MinimaxBot::_search_root(std::vector<Turn>& turns, int depth) {
 
         if (maximizing && sc > alpha)  { alpha = sc; best = turn; }
         if (!maximizing && sc < beta)  { beta  = sc; best = turn; }
+        // Partial-iteration harvest: remember the best fully-searched move
+        // of THIS iteration so a TimeUp mid-iteration doesn't discard it.
+        _root_partial_best  = best;
+        _root_partial_score = maximizing ? alpha : beta;
+        _root_partial_valid = true;
     }
 
     double best_sc = maximizing ? alpha : beta;
@@ -436,15 +508,15 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
     Turn tt_move{};
     bool has_tt_move = false;
 
-    TTEntry* tte = _tt_probe(ttk);
-    if (tte) {
-        has_tt_move = tte->has_move;
-        tt_move     = tte->move;
-        if (tte->depth >= depth) {
-            double sc = _tt_adjust_load(tte->score);
-            if (tte->flag == TT_EXACT) return sc;
-            if (tte->flag == TT_LOWER) alpha = std::max(alpha, sc);
-            if (tte->flag == TT_UPPER) beta  = std::min(beta,  sc);
+    TTView tte{};
+    if (_tt_probe(ttk, tte)) {
+        has_tt_move = tte.has_move;
+        tt_move     = tte.move;
+        if (tte.depth >= depth) {
+            double sc = _tt_adjust_load(tte.score);
+            if (tte.flag == TT_EXACT) return sc;
+            if (tte.flag == TT_LOWER) alpha = std::max(alpha, sc);
+            if (tte.flag == TT_UPPER) beta  = std::min(beta,  sc);
             if (alpha >= beta) return sc;
         }
     }

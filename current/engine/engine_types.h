@@ -34,13 +34,20 @@ struct UndoStep {
     int8_t     player;
 };
 
+// Lock-free shared TT entry (lazy SMP): three words with XOR-consistency
+// (a = meta ^ b ^ c). Torn concurrent writes scramble the verify bits and
+// read as a miss instead of returning garbage.
 struct TTEntry {
-    uint32_t key = 0;   // upper 32 bits of hash (verification)
-    int16_t  depth = 0;
-    int8_t   flag  = 0; // TT_EXACT / TT_LOWER / TT_UPPER
-    double   score = 0;
-    Turn     move  = {};
-    bool     has_move = false;
+    uint64_t a = 0, b = 0, c = 0;
+};
+
+// Decoded view of a TTEntry (what callers consume).
+struct TTView {
+    int16_t depth = 0;
+    int8_t  flag  = 0;  // TT_EXACT / TT_LOWER / TT_UPPER
+    bool    has_move = false;
+    double  score = 0;
+    Turn    move  = {};
 };
 
 struct TimeUp {};
