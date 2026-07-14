@@ -59,6 +59,22 @@ struct MinimaxBotWrapper {
         return res;
     }
 
+    // Threat-space forced-win probe. Returns (result, moves) where result is
+    // +1 proven win / -1 provably no forcing win / 0 unknown, and moves is
+    // the winning first turn as [(q, r), ...] when result == +1.
+    py::tuple forced_win(py::object game, int max_turns) {
+        auto gs = extract_game_state(game);
+        Turn t{};
+        int r = engine.forced_win_position(gs, max_turns, &t);
+        py::list moves;
+        if (r == 1) {
+            moves.append(py::make_tuple(pack_q(t.first), pack_r(t.first)));
+            if (gs.moves_left >= 2 && t.second != t.first)
+                moves.append(py::make_tuple(pack_q(t.second), pack_r(t.second)));
+        }
+        return py::make_tuple(r, moves);
+    }
+
     py::list extract_pv() {
         auto pv = engine.extract_pv();
         py::list result;
@@ -82,6 +98,13 @@ PYBIND11_MODULE(minimax_cpp, m) {
         .def(py::init<double>(), py::arg("time_limit") = 0.05)
         .def("get_move", &MinimaxBotWrapper::get_move, py::arg("game"))
         .def("extract_pv", &MinimaxBotWrapper::extract_pv)
+        .def("forced_win", &MinimaxBotWrapper::forced_win,
+             py::arg("game"), py::arg("max_turns") = 8)
+        .def_property("vcf_node_budget",
+            [](MinimaxBotWrapper& b) { return b.engine.vcf_node_budget; },
+            [](MinimaxBotWrapper& b, int v) { b.engine.vcf_node_budget = v; })
+        .def_property_readonly("vcf_nodes",
+            [](MinimaxBotWrapper& b) { return b.engine.vcf_nodes; })
         .def("__str__", [](const MinimaxBotWrapper&) { return "SealBot"; })
         .def_property("time_limit",
             [](MinimaxBotWrapper& b) { return b.engine.time_limit; },

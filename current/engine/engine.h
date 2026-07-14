@@ -15,3 +15,4 @@
 #include "board.h"         // make/undo, move delta
 #include "movegen.h"       // win/threat detection, turn generation
 #include "search.h"        // get_move, extract_pv, minimax, quiescence
+#include "vcf.h"           // threat-space forced-win solver
