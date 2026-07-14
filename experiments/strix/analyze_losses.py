@@ -44,8 +44,9 @@ def replay_positions(seq):
 
 
 def main():
-    path = sys.argv[1]
-    max_k = int(sys.argv[2]) if len(sys.argv) > 2 else 16
+    args = [a for a in sys.argv[1:] if a != "--flip"]
+    path = args[0]
+    max_k = int(args[1]) if len(args) > 1 else 16
     with open(path, "rb") as fh:
         games = pickle.load(fh)
     if "--flip" in sys.argv:
