@@ -116,9 +116,10 @@ def _shard(paths):
         if t is None:
             miss += 1
             continue
-        # Proven forced win for the mover: saturate the value target.
-        if vcf_flags is not None and vcf_flags[i]:
-            t = 8.0
+        # Proven forced win for the mover: soft floor (preserve gradation
+        # among wins — hard saturation to 8.0 regressed play, v1.4).
+        if vcf_flags is not None and vcf_flags[i] and t < 6.5:
+            t = 6.5
         sl = slice(offs[i], offs[i + 1])
         cand = list(zip(cq[sl].tolist(), cr[sl].tolist()))
         trip, wi, wc, ctrip = extract([tuple(c) for c in cells], int(mover),
