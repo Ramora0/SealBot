@@ -71,6 +71,10 @@ public:
             threads = std::max(1, std::atoi(e));
         if (const char* e = std::getenv("SEAL_VCF"))
             vcf_mode = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_VCF_BUDGET"))
+            vcf_node_budget = std::atoi(e);
+        if (const char* e = std::getenv("SEAL_VCF_K"))
+            vcf_k = std::atoi(e);
         if (const char* e = std::getenv("SEAL_CAND_CAP"))
             cand_cap = std::atoi(e);
         if (const char* e = std::getenv("SEAL_ROOT_CAP"))
@@ -164,6 +168,8 @@ public:
     // which the opponent has a proven forced win), 4 = interior attack
     // probe at depth >= 2 nodes. Default 0 until gated.
     int vcf_mode = 0;
+    // Root probe depth (turns); defense probes use vcf_k/2, interior 3.
+    int vcf_k = 8;
 
     // ── Check near-threat pre-filter (2+ unblocked windows with 3+ stones) ──
     bool has_near_threats() const {

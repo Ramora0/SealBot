@@ -154,7 +154,7 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
     if (vcf_mode & 1) {
         // Attack: play a proven forced win immediately.
         Turn wt{};
-        if (forced_win(_cur_player, _moves_left, 8, &wt) == 1) {
+        if (forced_win(_cur_player, _moves_left, vcf_k, &wt) == 1) {
             last_depth = 99;
             last_score = (WIN_SCORE - 1);
             return {pack_q(wt.first),  pack_r(wt.first),
@@ -165,7 +165,7 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
         // Defense: drop turns after which the opponent has a proven
         // forced win (bounded probe per turn). Keep at least 3 turns.
         int budget_save = vcf_node_budget;
-        vcf_node_budget = 800;
+        vcf_node_budget = std::max(800, budget_save / 6);
         std::vector<Turn> safe;
         safe.reserve(turns.size());
         for (const auto& t : turns) {
@@ -173,7 +173,8 @@ inline MoveResult MinimaxBot::get_move(const GameState& gs) {
             int n = _make_turn(t, steps);
             bool losing = false;
             if (!_game_over)
-                losing = (forced_win(_cur_player, _moves_left, 4,
+                losing = (forced_win(_cur_player, _moves_left,
+                                     std::max(4, vcf_k / 2),
                                      nullptr) == 1);
             _undo_turn(steps, n);
             if (!losing) safe.push_back(t);
@@ -584,7 +585,7 @@ inline double MinimaxBot::_minimax(int depth, double alpha, double beta) {
     // node without expansion (tactical depth grafted onto shallow search).
     if ((vcf_mode & 4) && depth >= 2) {
         int budget_save = vcf_node_budget;
-        vcf_node_budget = 400;
+        vcf_node_budget = std::max(400, budget_save / 12);
         Turn vt{};
         int fw = forced_win(_cur_player, _moves_left, 3, &vt);
         vcf_node_budget = budget_save;
