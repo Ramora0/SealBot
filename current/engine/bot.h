@@ -147,6 +147,17 @@ public:
         return fa || fb;
     }
 
+    // ── Threat-space forced-win solver (implemented in vcf.h) ──
+    // Returns +1 if `player` (to move, with `stones_left` stones this turn)
+    // has a PROVEN forced win within max_turns turns, -1 if provably not
+    // via forcing lines, 0 if unknown. If winning, writes the first turn.
+    int forced_win(int8_t player, int stones_left, int max_turns, Turn* out);
+    int forced_win_position(const GameState& gs, int max_turns, Turn* out);
+    // Node cap per forced_win call. 5000 keeps worst-case solve time near
+    // 10 ms; raising it to 50000 (~100 ms worst) finds ~8% more deep wins.
+    int vcf_node_budget = 5000;
+    int vcf_nodes       = 0;       // nodes used by the last forced_win call
+
     // ── Check near-threat pre-filter (2+ unblocked windows with 3+ stones) ──
     bool has_near_threats() const {
         int a3 = 0, b3 = 0;
@@ -687,6 +698,13 @@ private:
     std::vector<Turn> _generate_threat_turns(
             const flat_set<Coord>& my_threats,
             const flat_set<Coord>& opp_threats);
+
+    // ── Threat-space solver internals (implemented in vcf.h) ──
+    struct VcfState;
+    std::unique_ptr<VcfState> _vcf;
+    void _vcf_load_position(const GameState& gs);
+    int  _vcf_attack(int stones, int remaining, Turn* out);
+    int  _vcf_after_attack_turn(int remaining);
 
     double _quiescence(double alpha, double beta, int qdepth);
     std::pair<Turn, flat_map<Turn, double, TurnHash>>
