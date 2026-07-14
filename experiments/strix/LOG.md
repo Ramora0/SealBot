@@ -467,3 +467,29 @@ proof depth/time to distinguish it from the loser. The danger-probe
 "value blindness" story was selection-biased; the binding constraint is
 in-game VCF k=11/40k vs threat horizon k<=16.
 constraint_decomp.py splits the generous delta (clock vs k/budget).
+
+## Time-scaling map: sealbot-tl x strix-sims grid (9 cells x 100g, paired openings)
+
+Grid (v1.5 champion, openings 0-49 both colors, BT/logistic fit anchored
+sealbot@0.44s = 0): sealbot -82 / 0 / +82 Elo at tl 0.11/0.44/1.76 ->
++41 Elo per clock-doubling, cleanly log-linear across the 16x range.
+strix -14 / -31 / +208 at sims 4/16/64 (solo latency .058/.093/.415
+s/turn) -> FLAT 4->16 (Gumbel at low sims ~= raw policy), +240 CLIFF
+16->64 (its search turns on). Equal-strength frontier: sealbot matches
+s4 at ~0.34s/turn (6x time odds), s16 at ~0.26s (3x), s64 needs ~15s
+= ~35x time odds (extrapolated ~3 doublings, order-of-magnitude only).
+Equal-time gap at 0.44s = ~208 Elo on the openings protocol.
+
+Method notes: the three sims-rows ran as PARALLEL processes (strix
+strength is sims-fixed; sealbot NPS measured identical 59k solo vs
+contended; the one suspect cell re-run solo 24/100 vs 16/100 contended,
+z~1.4 ns, pooled to 200g). Time axis uses solo-measured strix latency.
+Cross-day caveat: different node from the 42/150 anchor (29/100 vs
+24/100 on the shared subset, within noise). Files: grid_row.sh,
+analyze_grid.py, make_artifact.py; artifact "SealBot vs Strix: time
+scaling map".
+
+Reading for future gains: +40 sealbot Elo at fixed clock = one halving
+of the time handicap. Policy-only strix (<=16 sims) is ALREADY BEATEN
+at 0.3s/turn — the whole remaining gap is the 16->64 search cliff, i.e.
+exactly the proof-budget/foresight territory the autopsy identified.
