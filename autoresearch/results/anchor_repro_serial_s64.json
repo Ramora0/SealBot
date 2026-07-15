@@ -1,0 +1,24 @@
+{
+ "bot_dir": "current",
+ "games": 100,
+ "sealbot_tl_per_turn": 0.44,
+ "strix_sims": 64,
+ "strix_sec_per_stone_mean": 0.2747,
+ "strix_sec_per_turn_est": 0.5494,
+ "strix_wins": 75,
+ "strix_losses": 25,
+ "draws": 0,
+ "strix_win_rate": 0.75,
+ "strix_elo_vs_sealbot": 188.6,
+ "ci": [
+  0.657,
+  0.8245
+ ],
+ "mean_game_length": 62.0,
+ "illegal_substitutions": 3,
+ "sub_examples": [
+  "29: (0, 8)->(-1, 8)",
+  "48: (20, -4)->(14, -4)",
+  "91: (-3, -8)->(-7, -4)"
+ ]
+}

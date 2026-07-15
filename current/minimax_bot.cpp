@@ -50,7 +50,15 @@ struct MinimaxBotWrapper {
             return res;
         }
 
-        auto mr = engine.get_move(gs);
+        MoveResult mr;
+        {
+            // Search is pure C++ on the extracted state; release the GIL
+            // so other Python threads (e.g. a pipelined bench driving
+            // strix in another game) can run during the think. One
+            // wrapper instance must not be used from two threads at once.
+            py::gil_scoped_release release;
+            mr = engine.get_move(gs);
+        }
 
         py::list res;
         res.append(py::make_tuple(mr.q1, mr.r1));

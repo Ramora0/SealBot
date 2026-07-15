@@ -16,16 +16,23 @@ Which SealBot build plays is fixed by pre-importing minimax_cpp from
 """
 
 import argparse
+import concurrent.futures
 import json
 import logging
+import os
 import statistics
 import sys
+import threading
 import time
 from pathlib import Path
 
-SEALBOT_ROOT = Path("/users/PAS2836/leedavis/personal/SealBot")
-STRIX_ROOT = Path("/users/PAS2836/leedavis/personal/hexo-strix")
-CKPT = STRIX_ROOT / "checkpoint_00237000.pt"
+# OSC Pitzer defaults; override via env for other machines (see
+# autoresearch/CLAUDE.md for the Windows dev-box values).
+SEALBOT_ROOT = Path(os.environ.get(
+    "SEALBOT_ROOT", "/users/PAS2836/leedavis/personal/SealBot"))
+STRIX_ROOT = Path(os.environ.get(
+    "STRIX_ROOT", "/users/PAS2836/leedavis/personal/hexo-strix"))
+CKPT = Path(os.environ.get("STRIX_CKPT", str(STRIX_ROOT / "checkpoint_00237000.pt")))
 
 
 def hex_dist(a, b):
@@ -34,9 +41,12 @@ def hex_dist(a, b):
 
 
 def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
-              strix_times, subs, record=None, opening=None):
+              strix_times, subs, record=None, opening=None, seal_lock=None):
     import hexo_rs
     from game import HexGame, Player as SBPlayer
+
+    if seal_lock is None:  # serial path: uncontended dummy lock
+        seal_lock = threading.Lock()
 
     sealbot = sealbot_cls(time_limit=tl)
     hexo_is_a = (game_idx % 2 == 0)
@@ -73,7 +83,13 @@ def play_game(game_idx, sealbot_cls, tl, gc, gc_dict, eval_fn, mcts_config,
             game.make_move(action[0], action[1])
             moves += 1
         else:
-            result = sealbot.get_move(game)
+            # The lock serialises seal searches across pipelined games so
+            # each think gets the full core count; waiting happens BEFORE
+            # get_move starts its clock, so tl is undistorted. Requires a
+            # bot build that releases the GIL during search — older builds
+            # still work but overlap (and the speedup) mostly disappears.
+            with seal_lock:
+                result = sealbot.get_move(game)
             pair = result if sealbot.pair_moves else [result]
             for m in pair:
                 if game.game_over:
@@ -117,6 +133,13 @@ def main():
     ap.add_argument("--openings", type=str, default=None,
                     help="pkl of opening seqs; opening i//2 for game i "
                          "(paired: each opening played with colors swapped)")
+    ap.add_argument("--pipeline", type=int, default=1,
+                    help="concurrent game threads. A global lock keeps seal "
+                         "searches serial (full cores, honest tl); strix "
+                         "(GPU) fills seal's think time in the other games. "
+                         "2 is the sweet spot; needs a GIL-releasing bot "
+                         "build. Pipeline count is part of result identity "
+                         "— never compare runs across different values.")
     args = ap.parse_args()
 
     openings = None
@@ -168,27 +191,53 @@ def main():
     strix_times, subs, results = [], [], []
     record = [] if args.record else None
     t_start = time.time()
+
+    def _progress(done):
+        if done % 10 == 0 or done == args.games:
+            w = sum(r["is_win"] for r in results)
+            l = sum(r["is_loss"] for r in results)
+            print(f"[{done}/{args.games}] strix {w}W-{l}L "
+                  f"({time.time()-t_start:.0f}s, {len(subs)} subs)",
+                  flush=True)
+
+    def _opening(i):
+        return openings[(i // 2) % len(openings)] if openings else None
+
     try:
-        for i in range(args.games):
-            opening = (openings[(i // 2) % len(openings)]
-                       if openings else None)
-            results.append(play_game(i, minimax_cpp.MinimaxBot, args.tl, gc,
-                                     gc_dict, server.eval_fn, mcts_config,
-                                     strix_times, subs, record=record,
-                                     opening=opening))
-            if record is not None and opening is not None:
-                record[-1]["opening_idx"] = (i // 2) % len(openings)
-            if (i + 1) % 10 == 0 or i + 1 == args.games:
-                w = sum(r["is_win"] for r in results)
-                l = sum(r["is_loss"] for r in results)
-                print(f"[{i+1}/{args.games}] strix {w}W-{l}L "
-                      f"({time.time()-t_start:.0f}s, {len(subs)} subs)",
-                      flush=True)
+        if args.pipeline <= 1:
+            for i in range(args.games):
+                results.append(play_game(
+                    i, minimax_cpp.MinimaxBot, args.tl, gc, gc_dict,
+                    server.eval_fn, mcts_config, strix_times, subs,
+                    record=record, opening=_opening(i)))
+                _progress(i + 1)
+        else:
+            # Phase-offset games: the seal_lock keeps at most one minimax
+            # search running (full cores each); strix's GPU work for the
+            # other games fills the gaps. results/record order is
+            # completion order — all downstream stats are aggregates, and
+            # record entries carry game_idx.
+            seal_lock = threading.Lock()
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=args.pipeline) as pool:
+                futs = [pool.submit(play_game, i, minimax_cpp.MinimaxBot,
+                                    args.tl, gc, gc_dict, server.eval_fn,
+                                    mcts_config, strix_times, subs,
+                                    record=record, opening=_opening(i),
+                                    seal_lock=seal_lock)
+                        for i in range(args.games)]
+                for f in concurrent.futures.as_completed(futs):
+                    results.append(f.result())
+                    _progress(len(results))
     finally:
         server.stop()
 
     if record is not None and args.out:
         import pickle
+        record.sort(key=lambda e: e["game_idx"])
+        if openings:
+            for e in record:
+                e["opening_idx"] = (e["game_idx"] // 2) % len(openings)
         with open(args.out + ".games.pkl", "wb") as fh:
             pickle.dump(record, fh, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"recorded {len(record)} games -> {args.out}.games.pkl")
@@ -200,6 +249,7 @@ def main():
     mean = statistics.fmean(strix_times) if strix_times else 0.0
     summary = {
         "bot_dir": args.bot_dir, "games": args.games,
+        "pipeline": args.pipeline,
         "sealbot_tl_per_turn": args.tl, "strix_sims": args.sims,
         "strix_sec_per_stone_mean": round(mean, 4),
         "strix_sec_per_turn_est": round(2 * mean, 4),
