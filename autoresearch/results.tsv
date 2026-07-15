@@ -1,2 +1,3 @@
 name	bot_dir	env	epoch	seal_w	elo	delta	z	status	description
 ctrl	current	-	e1	34/100	-115 [-187, -44]	-	-	baseline	champion baseline, T=16 pipeline2 tl0.44
+vcf_fk8_fb20k	current	SEAL_VCF_FK=8 SEAL_VCF_FB=20000	e1	23/100	-210 [-290, -130]	-11	-1.72	discard	stronger def-filter probes: eats clock, confident negative
