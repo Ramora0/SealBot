@@ -47,6 +47,19 @@ CLIP = 8.0
 HEX7 = [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
 
 
+def _mir3_11():
+    """Color-mirror permutation of raw 3^11 codes (digits 1<->2)."""
+    codes = np.arange(N_RAW, dtype=np.int64)
+    out = np.zeros_like(codes)
+    for i in range(11):
+        d = (codes // 3 ** i) % 3
+        out += np.where(d == 0, 0, 3 - d) * 3 ** i
+    return out
+
+
+MIR3_11 = _mir3_11()
+
+
 # ── extraction ──────────────────────────────────────────────────────────
 
 def extract_mix(cells, mover, cand):
@@ -439,6 +452,12 @@ def smoke():
     assert abs(float(probs[1, 1]) - 0.99950) < 1e-3
     assert abs(float(probs[2, 0]) - 0.5) < 1e-6
 
+    # mirror LUT: involution, zero fixed, all-ones <-> all-twos
+    assert (MIR3_11[MIR3_11] == np.arange(N_RAW)).all()
+    assert MIR3_11[0] == 0
+    ones = sum(1 * 3 ** i for i in range(11))
+    assert MIR3_11[ones] == 2 * ones
+
     # policy CE: identical logits -> CE == entropy of target
     lg = torch.tensor([1.0, 2.0, 0.5, -1.0])
     seg = torch.tensor([0, 0, 0, 0])
@@ -483,6 +502,10 @@ def main():
     ap.add_argument("--true-w", type=float, default=0.25,
                     help="Rapfi mixed-loss weight on true labels (outcome / "
                          "played move); soft-only samples are unaffected")
+    ap.add_argument("--mirror", action="store_true",
+                    help="alternate color-mirrored batches (digit-swapped "
+                         "codes, negated value/outcome/tempo, same policy "
+                         "targets) so the engine can query root-relative")
     ap.add_argument("--out", default="output_mixnet1")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
@@ -523,7 +546,9 @@ def main():
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(
         opt, T_max=args.epochs, eta_min=args.lr * 0.05)
 
-    def batch(ids):
+    mir = torch.from_numpy(MIR3_11).to(dev)
+
+    def batch(ids, mirror=False):
         clens = coffs[ids + 1] - coffs[ids]
         cg = multi_arange(coffs[ids], clens)
         seg_c = np.repeat(np.arange(len(ids)), clens)
@@ -534,15 +559,20 @@ def main():
         cbase = np.zeros(len(ids) + 1, dtype=np.int64)
         np.cumsum(clens, out=cbase[1:])
         cand_rows = candi[pg] + cbase[:-1][seg_p]
-        return (codes[torch.from_numpy(cg)].to(dev),
+        bco = codes[torch.from_numpy(cg)].to(dev)
+        bg1, by, boc = g1[ids].to(dev), tgt[ids].to(dev), outc[ids].to(dev)
+        if mirror:
+            bco = mir[bco]
+            bg1, by, boc = -bg1, -by, -boc
+        return (bco,
                 torch.from_numpy(src).to(dev),
                 torch.from_numpy(nbr).to(dev),
                 torch.from_numpy(useg).to(dev), len(ids),
                 torch.from_numpy(src[cand_rows]).to(dev),
                 torch.from_numpy(seg_p).to(dev),
-                g0[ids].to(dev), g1[ids].to(dev),
-                logit[pg].to(dev), tgt[ids].to(dev),
-                played[ids].to(dev), outc[ids].to(dev))
+                g0[ids].to(dev), bg1,
+                logit[pg].to(dev), by,
+                played[ids].to(dev), boc)
 
     steps = (len(train_ids) + args.batch - 1) // args.batch
     print(f"training mixnet (M={args.M} C={args.C} P={args.P} V={args.V}) "
@@ -555,7 +585,7 @@ def main():
         for s in range(0, len(train_ids), args.batch):
             ids = np.sort(train_ids[s:s + args.batch])
             (bco, src, nbr, useg, npos, cand_u, seg_p, bg0, bg1, btl,
-             by, bpl, boc) = batch(ids)
+             by, bpl, boc) = batch(ids, mirror=args.mirror and nb % 2 == 1)
             opt.zero_grad()
             a = model.cell_feats(bco, dev)
             fp, A, cnt = model.conv_pool(a, src, nbr, useg, npos)
