@@ -62,7 +62,8 @@ def table_forward(tab, model, cells, mover, cand):
     a = torch.from_numpy(np.clip(s, 0.0, CLIP))
     fp, A, cnt = model.conv_pool(a, torch.from_numpy(src),
                                  torch.from_numpy(nbr),
-                                 torch.from_numpy(useg), 1)
+                                 torch.from_numpy(useg), 1,
+                                 torch.from_numpy(codes != 0).any(dim=1))
     g0 = torch.tensor([0.3]); g1 = torch.tensor([0.5])
     cand_u = torch.from_numpy(src[ci.astype(np.int64)])
     seg_p = torch.zeros(len(ci), dtype=torch.int64)
@@ -80,7 +81,8 @@ def module_forward(model, cells, mover, cand):
                              torch.device("cpu"))
         fp, A, cnt = model.conv_pool(a, torch.from_numpy(src),
                                      torch.from_numpy(nbr),
-                                     torch.from_numpy(useg), 1)
+                                     torch.from_numpy(useg), 1,
+                                     torch.from_numpy(codes != 0).any(dim=1))
         g0 = torch.tensor([0.3]); g1 = torch.tensor([0.5])
         cand_u = torch.from_numpy(src[ci.astype(np.int64)])
         seg_p = torch.zeros(len(ci), dtype=torch.int64)

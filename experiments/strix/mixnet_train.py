@@ -298,8 +298,14 @@ class Mixnet(nn.Module):
         s = e[inv].reshape(-1, 3, self.c).sum(dim=1)
         return torch.clamp(s, 0.0, CLIP)
 
-    def conv_pool(self, a_stored, src, nbr, useg, npos):
-        """a_stored [n_stored, C] -> (F' [nU, C], A [npos, C], count)."""
+    def conv_pool(self, a_stored, src, nbr, useg, npos, act):
+        """a_stored [n_stored, C], act [n_stored] bool (cell has any nonzero
+        line pattern) -> (F' [nU, C], A [npos, C], count).
+
+        count matches the engine's |U| = #{cells with an active cell in
+        their 7-neighborhood}; rows that exist only as candidate-readout
+        halos carry F' == 0 and must NOT be counted (the engine cannot
+        know the candidate list at eval time)."""
         nU = nbr.shape[0]
         c2 = self.c // 2
         a_pad = torch.cat([a_stored, a_stored.new_zeros(1, self.c)], dim=0)
@@ -311,8 +317,10 @@ class Mixnet(nn.Module):
         fp = torch.cat([dwout, rest], dim=1)
         A = torch.zeros(npos, self.c, device=fp.device).index_add_(
             0, useg, fp)
+        act_pad = torch.cat([act, act.new_zeros(1)], dim=0)
+        counted = act_pad[idx.reshape(-1)].reshape(nU, 7).any(dim=1)
         cnt = torch.zeros(npos, device=fp.device).index_add_(
-            0, useg, torch.ones(nU, device=fp.device))
+            0, useg, counted.float())
         return fp, A, cnt
 
     def value(self, A, g0, g1):
@@ -417,7 +425,7 @@ def smoke():
         a = model.cell_feats(codes_t, torch.device("cpu"))
         fp, A, cnt = model.conv_pool(
             a, torch.from_numpy(src), torch.from_numpy(nbr),
-            torch.from_numpy(useg), len(exs))
+            torch.from_numpy(useg), len(exs), (codes_t != 0).any(dim=1))
         cand_u = torch.from_numpy(src[np.concatenate(CI)])
         seg_p = torch.from_numpy(np.concatenate(segs))
         g0 = torch.tensor(g0l); g1 = torch.tensor(g1l)
@@ -588,7 +596,8 @@ def main():
              by, bpl, boc) = batch(ids, mirror=args.mirror and nb % 2 == 1)
             opt.zero_grad()
             a = model.cell_feats(bco, dev)
-            fp, A, cnt = model.conv_pool(a, src, nbr, useg, npos)
+            fp, A, cnt = model.conv_pool(a, src, nbr, useg, npos,
+                                         (bco != 0).any(dim=1))
             lv = value_ce_mixed(model.value(A, bg0, bg1), by, boc,
                                 args.true_w)
             lp, _, _ = policy_ce_mixed(
@@ -606,7 +615,8 @@ def main():
                 (bco, src, nbr, useg, npos, cand_u, seg_p, bg0, bg1, btl,
                  _, _, _) = batch(ids)
                 a = model.cell_feats(bco, dev)
-                fp, A, cnt = model.conv_pool(a, src, nbr, useg, npos)
+                fp, A, cnt = model.conv_pool(a, src, nbr, useg, npos,
+                                             (bco != 0).any(dim=1))
                 vl = model.value(A, bg0, bg1)
                 pr = F.softmax(vl, dim=1)
                 preds.append((pr[:, 0] - pr[:, 1]).cpu().numpy())
