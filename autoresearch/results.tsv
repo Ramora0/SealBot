@@ -6,3 +6,4 @@ vcf_k13_b60k	current	SEAL_VCF_K=13 SEAL_VCF_BUDGET=60000	e1	23/100	-210 [-290, -
 vcf_k9_b25k	current	SEAL_VCF_K=9 SEAL_VCF_BUDGET=25000	e1	35/100	-108 [-178, -37]	+1	+0.15	keep	shallower root proof: ns but positive, ADOPT per greedy rule; new ctrl
 rootcap26	current	SEAL_ROOT_CAP=26	e1	22/100	-220 [-301, -138]	-13	-2.04	discard	root width 26: blowout negative, width not free at T=16
 rootcap16	current	SEAL_ROOT_CAP=16	e1	33/100	-123 [-195, -51]	-2	-0.30	discard	root width 16: ns; cap 20 confirmed optimal (26 blowout bad)
+tt24	current	SEAL_TT_BITS=24	e1	25/100	-191 [-269, -113]	-10	-1.54	discard	TT 2^24=400MB blows V-cache, RAM-latency bound; try 2^21 next
