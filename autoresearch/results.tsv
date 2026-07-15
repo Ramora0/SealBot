@@ -10,3 +10,4 @@ tt24	current	SEAL_TT_BITS=24	e1	25/100	-191 [-269, -113]	-10	-1.54	discard	TT 2^
 vetoslice_88_10	cand	-	e1	28/100	-164 [-239, -89]	-7	-1.07	discard	veto slice 16%->10%: veto earns its clock, do not starve it
 tt21	current	SEAL_TT_BITS=21	e1	30/100	-147 [-221, -73]	-5	-0.75	discard	TT 2^21 V-cache fit: capacity loss offsets latency win; 2^22 optimal
 vetotier_k6	cand	-	e1	33/100	-123 [-195, -51]	-2	-0.30	discard	veto tier k+3->k+6: ns, budget-bound in window; veto subsystem closed
+smp3	current	SEAL_SMP_MODE=3	e1	30/100	-147 [-221, -73]	-5	-0.75	discard	ABDADA on 8-core: root-split confirmed better both machines
