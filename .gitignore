@@ -29,3 +29,4 @@ experiments/strix/danger_probe.pkl
 experiments/strix/dagger_prep/
 experiments/strix/dagger_targets/
 experiments/strix/t5_loss_analysis.txt
+experiments/strix/output_*/*_ds.npz
