@@ -69,8 +69,8 @@ CHAMPION_ENV = {
     "SEAL_TRUNK_BLEND": "0",
     "SEAL_POLICY_MODE": "74",
     "SEAL_VCF": "15",
-    "SEAL_VCF_K": "11",
-    "SEAL_VCF_BUDGET": "40000",
+    "SEAL_VCF_K": "9",       # adopted e1: vcf_k9_b25k 35/100 (+1 vs 34)
+    "SEAL_VCF_BUDGET": "25000",
     "SEAL_SMP_MODE": "2",     # root-split YBW
 }
 

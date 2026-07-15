@@ -4,6 +4,23 @@ Ordered roughly by expected value. One experiment = one idea. Mark
 attempts with the results.tsv name; move dead ideas to the graveyard at
 the bottom with a one-line cause of death.
 
+## Knob inventory (verified against cand/ source, 2026-07-14)
+
+Env (no rebuild): SEAL_VCF_FK/FB (defense-filter probe; auto = max(4,k/2)=5,
+clamp(budget/6,800,8000)=6666), SEAL_VCF_K=11, SEAL_VCF_BUDGET=40000,
+SEAL_ROOT_CAP=20 (runtime-effective), SEAL_CAND_CAP=15 (runtime only
+DOWN — interior pairs compile-time via g_inner_pairs), SEAL_TT_BITS
+(auto 22 at T>=8; range 16–26), SEAL_DELTA_KEEP=0, SEAL_TRUNK_BLEND=0,
+SEAL_POLICY_MODE=74.
+
+Code constants (edit cand/ + rebuild): search/veto time split (0.82 tl
+search, 0.16 tl veto — search.h:143,406); defense-filter clock cutoff
+40% (search.h:221); veto tiers k+3 / max(6,k-2), chosen-move budget x2,
+probe cap 5 (search.h:416–426,447–450); CANDIDATE_CAP=15,
+ROOT_CANDIDATE_CAP=20, PAIR_SUM_CAP=14 (wedge — measured load-bearing,
+don't touch), NEIGHBOR_DIST=2, DELTA_WEIGHT=15, MAX_QDEPTH=16
+(constants.h); trunk time-check mask 255 (bot.h:557).
+
 ## Round 1 — env knobs (from EVAL_SCHEME.md, composable → factorial corners)
 
 - [ ] **A: `SEAL_VCF_FK=8 SEAL_VCF_FB=20000`** — defense-filter probe

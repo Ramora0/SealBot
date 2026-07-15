@@ -3,3 +3,4 @@ ctrl	current	-	e1	34/100	-115 [-187, -44]	-	-	baseline	champion baseline, T=16 p
 vcf_fk8_fb20k	current	SEAL_VCF_FK=8 SEAL_VCF_FB=20000	e1	23/100	-210 [-290, -130]	-11	-1.72	discard	stronger def-filter probes: eats clock, confident negative
 vcf_fk4_fb3k	current	SEAL_VCF_FK=4 SEAL_VCF_FB=3000	e1	31/100	-139 [-212, -66]	-3	-0.45	discard	cheaper def-filter: ns; auto fk/fb near-optimal, lever closed
 vcf_k13_b60k	current	SEAL_VCF_K=13 SEAL_VCF_BUDGET=60000	e1	23/100	-210 [-290, -130]	-11	-1.72	discard	deeper root proof: starves main search, confident negative
+vcf_k9_b25k	current	SEAL_VCF_K=9 SEAL_VCF_BUDGET=25000	e1	35/100	-108 [-178, -37]	+1	+0.15	keep	shallower root proof: ns but positive, ADOPT per greedy rule; new ctrl
