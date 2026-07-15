@@ -81,11 +81,41 @@ sized to avoid memorizing 460k positions — noted deviation.
 - **Law #2**: offline metrics don't transfer. The trainer's metrics
   only validate the code path; adoption is decided by gate.py vs strix.
 
-## Engine port (later task, scoping notes)
+## Engine port plan (scoped 2026-07-15 against current/engine)
 
-Codebook 3^11 × C=32 int8 ≈ 5.7 MB (quantize like Rapfi's [−16,16]).
-Incremental: a stone changes ≤3×11 cells' F; hex conv spreads each
-delta to 7 cells' F'; pooled acc updated by deltas (same pattern as
-today's acc2). Policy per candidate = one P×P dyn matmul (generated
-once per position) + P-dot. Value = star+MLP per eval, recomputed per
-node as today. 16-bit dyn-conv matmul per Rapfi A.3.
+Blob: `mixnet_bake.py` writes mixnet.bin (float32 v1; quantization is a
+later speed lever). Codebook 3^11 × C float32 = 22.7 MB; row 0 exactly
+zero (anchor). Exact table/module parity verified in the bake script —
+it is the parity oracle for this port.
+
+- **POV**: the engine keeps ONE accumulator in root-relative digits and
+  queries both sides (g1 sign = who places). The engine net MUST be
+  trained with `--mirror` (trunk3 convention: digit-swap codes, negate
+  value/outcome/tempo, same policy targets). A non-mirror net would
+  need Stockfish-style dual perspectives (2× conv layer cost) — don't.
+- **New state** (all derivable from _lp, so undo needs no snapshots
+  beyond the existing pattern):
+  - `_amem[cell][C]` cache of clamped pre-conv activations a(c)
+    (~2.5 MB plane); updated for the ≤33 line cells per make/undo.
+  - `_acc3[C]` = pooled F' (conv half clamped per cell). Update per
+    make/undo over the dedup'd affected set: changed cells ∪ their
+    hex-7 neighborhoods (~100-150 cells; reads hit _amem, not the
+    codebook).
+  - `_usup[cell]` uint8 = # active cells in own 7-neighborhood;
+    |U| = #{_usup > 0} maintained on activity flips (gmean divisor).
+  - search.h root save/restore: memcpy _acc3 + _amem + |U| alongside
+    acc2 (once per get_move, negligible).
+- **Hooks**: same call sites as `_trunk_cells(±1)` in board.h
+  _make/_undo (lines ~39/123/133/214) and the full-rebuild loop
+  (~line 290/327).
+- **Heads**: value = star(a⊙b) → V → relu → V → relu → 3 → softmax →
+  score = (p_w − p_l) × 8000 (matches trunk's v*8 × 1000 scale).
+  Policy: per node, gmean = _acc3/|U| → MLP → {W[P×P], b} once; per
+  candidate F'(cand) from _amem neighborhood gather + dyn matmul +
+  pout. for_root flips g1 sign exactly as _policy_score_trunk.
+- **Env**: `SEAL_EVAL=mixnet`, blob via `SEAL_MIXNET_BLOB` (default
+  <bot dir>/mixnet.bin); keep trunk path fully intact for A/B.
+- **Parity test**: python-side table_forward (mixnet_bake) vs engine
+  `static_eval`/`policy_score_debug` on random positions, exact to
+  float tolerance (law #3/#4), including mid-search incremental drift
+  check like test_parity.py.
