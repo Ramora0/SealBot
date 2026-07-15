@@ -36,6 +36,9 @@ don't touch), NEIGHBOR_DIST=2, DELTA_WEIGHT=15, MAX_QDEPTH=16
 
 - [ ] `SEAL_TT_BITS` — TT sizing vs the 5800X3D's 96 MB V-cache; the
   auto-size (2^22 at T>=8) was tuned on cluster nodes, not this chip.
+- [ ] `SEAL_SMP_MODE=3` — ABDADA re-test on this box: lost at T=20 on
+  cluster (31 vs 35/100) but no cluster tuning has transferred yet;
+  measured root-split occupancy here = 2.56 cores / 32% of physical.
 - [ ] Tiered-veto knobs (chosen-move probe at k+3, doubled budget) —
   sweep the +3 and the multiplier now that probes run parallel.
 - [ ] `SEAL_TRUNK_BLEND` micro-sweep (0 vs 0.05 vs 0.1) — champion is 0,
