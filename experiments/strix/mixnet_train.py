@@ -507,6 +507,11 @@ def main():
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
     ap.add_argument("--max-shards", type=int, default=None)
+    ap.add_argument("--data-frac", type=float, default=1.0,
+                    help="train on this fraction of the (fixed-seed) train "
+                         "pool; the val split is identical across fractions")
+    ap.add_argument("--cache", default=None,
+                    help="shared dataset cache path (default <out>/cache)")
     ap.add_argument("--true-w", type=float, default=0.25,
                     help="Rapfi mixed-loss weight on true labels (outcome / "
                          "played move); soft-only samples are unaffected")
@@ -526,8 +531,8 @@ def main():
     dev = torch.device(args.device)
     out_dir = os.path.join(SCRIPT_DIR, args.out)
     os.makedirs(out_dir, exist_ok=True)
-    ds = build_mix(os.path.join(out_dir, "cache_mixnet.npz"), args.threads,
-                   max_shards=args.max_shards)
+    cache = args.cache or os.path.join(out_dir, "cache_mixnet.npz")
+    ds = build_mix(cache, args.threads, max_shards=args.max_shards)
 
     n = len(ds["tgt"])
     coffs, poffs = ds["coffs"], ds["poffs"]
@@ -547,6 +552,10 @@ def main():
     order = rng.permutation(n)
     n_val = min(8000, n // 10)
     val_ids, train_ids = np.sort(order[:n_val]), order[n_val:]
+    if args.data_frac < 1.0:      # nested subsets, identical val split
+        train_ids = train_ids[:int(round(len(train_ids) * args.data_frac))]
+        print(f"data-frac {args.data_frac}: {len(train_ids)} train pos",
+              flush=True)
 
     model = Mixnet(m=args.M, c=args.C, p=args.P, v=args.V).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr,

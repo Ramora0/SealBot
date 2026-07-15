@@ -132,7 +132,8 @@ def build_bench(chunk):
     model, mc, gc = load_strix()
     out_dir = SCRIPT_DIR / "bench_targets"
     os.makedirs(out_dir, exist_ok=True)
-    files = sorted(glob.glob(str(SCRIPT_DIR / "bench_*.games.pkl")))
+    files = sorted(glob.glob(str(SCRIPT_DIR / "bench_*.games.pkl"))
+                   + glob.glob(str(SCRIPT_DIR / "data_runs" / "*.games.pkl")))
     total = 0
     t0 = time.time()
     for fi, f in enumerate(files):
@@ -141,6 +142,9 @@ def build_bench(chunk):
         if out_path.exists():
             continue
         games = pickle.load(open(f, "rb"))
+        # Openings 50-74 are the HELD-OUT set (transfer checks) — they must
+        # never enter training data. Bench plays opening game_idx//2.
+        games = [g for g in games if g.get("game_idx", 0) // 2 < 50]
         evs, states = [], []
         for ev in bench_events(games):
             s = state_from_cells(ev[0], ev[1], ev[2], gc)
