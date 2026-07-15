@@ -13,3 +13,4 @@ vetotier_k6	cand	-	e1	33/100	-123 [-195, -51]	-2	-0.30	discard	veto tier k+3->k+
 smp3	current	SEAL_SMP_MODE=3	e1	30/100	-147 [-221, -73]	-5	-0.75	discard	ABDADA on 8-core: root-split confirmed better both machines
 vcf11_nointerior	current	SEAL_VCF=11	e1	36/100	-100 [-170, -30]	+1	+0.15	keep	interior probe off: free simplification, ADOPT; new ctrl 36
 policy75	current	SEAL_POLICY_MODE=75	e1	32/100	-131 [-203, -58]	-4	-0.60	discard	policy fusion at our-interior: ns negative, delta owns the tree
+mixnet1m	cand_mixnet	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet/mixnet.bin	e1	38/100	-85 [-155, -15]	+2	+0.29	keep	Rapfi Mixnet repro (mirror net), first gate: parity+ vs tuned champion, knobs untuned
