@@ -1,0 +1,24 @@
+{
+ "bot_dir": "C:\\Users\\Lee\\coding\\python\\AI\\SealBot\\current",
+ "games": 100,
+ "pipeline": 2,
+ "sealbot_tl_per_turn": 0.44,
+ "strix_sims": 64,
+ "strix_sec_per_stone_mean": 0.4103,
+ "strix_sec_per_turn_est": 0.8206,
+ "strix_wins": 64,
+ "strix_losses": 36,
+ "draws": 0,
+ "strix_win_rate": 0.64,
+ "strix_elo_vs_sealbot": 98.9,
+ "ci": [
+  0.5424,
+  0.7273
+ ],
+ "mean_game_length": 61.5,
+ "illegal_substitutions": 2,
+ "sub_examples": [
+  "91: (-3, -8)->(-7, -4)",
+  "91: (9, 4)->(4, 4)"
+ ]
+}

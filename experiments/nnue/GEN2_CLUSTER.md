@@ -7,20 +7,21 @@ Target: 100–300k games ≈ 3–10M positions. datagen.py is resumable
 
 ## One-time setup on the cluster
 
-    cd ~/personal/SealBot && git fetch && git checkout mixnet-repro
-    # build the mixnet engine (icpc, force-clean):
-    python autoresearch/build.py cand_mixnet --smoke
+    cd ~/personal/SealBot && git fetch && git checkout mixnet-repro && git pull
+    # build the mixnet engine (icpc, force-clean). cand_mixnet64 is the
+    # champion since mixnet2_c64 (42/100, Elo -56): M128/C64 mirror net.
+    python autoresearch/build.py cand_mixnet64 --smoke
     # bake the blob from the committed checkpoint — MUST be --device cpu
     # (CPU bake is the parity-verified canonical table; CUDA bake drifts):
     cd experiments/strix
-    python mixnet_bake.py --ckpt output_mixnet1m/mixnet.pt --device cpu \
-        --out ../../cand_mixnet/mixnet.bin
+    python mixnet_bake.py --ckpt output_ship_m128c64/mixnet.pt --device cpu \
+        --out ../../cand_mixnet64/mixnet.bin
 
 ## Per-job env (workers inherit; SEAL_THREADS=1 — parallelism comes
 ## from workers, one core each)
 
     export SEAL_EVAL=mixnet
-    export SEAL_MIXNET_BLOB=$HOME/personal/SealBot/cand_mixnet/mixnet.bin
+    export SEAL_MIXNET_BLOB=$HOME/personal/SealBot/cand_mixnet64/mixnet.bin
     export SEAL_TRUNK_BLEND=0 SEAL_POLICY_MODE=74
     export SEAL_VCF=11 SEAL_VCF_K=9 SEAL_VCF_BUDGET=25000
     export SEAL_SMP_MODE=2 SEAL_THREADS=1
@@ -32,7 +33,7 @@ node-hours (expect ~5k positions, mean depth well above gen0's, scores
 mostly in the few-hundreds with tails near ±8000):
 
     cd ~/personal/SealBot/experiments/nnue
-    python datagen.py --bot-dir ../../cand_mixnet --out data/gen2_pilot \
+    python datagen.py --bot-dir ../../cand_mixnet64 --out data/gen2_pilot \
         --workers 8 --games 200 --tl-min 0.08 --tl-max 0.16 \
         --open-min 2 --open-max 12 --rand-move-prob 0.10
     python - <<'EOF'
@@ -47,7 +48,7 @@ mostly in the few-hundreds with tails near ±8000):
 
 Then the real run:
 
-    python datagen.py --bot-dir ../../cand_mixnet --out data/gen2 \
+    python datagen.py --bot-dir ../../cand_mixnet64 --out data/gen2 \
         --workers 38 --games 150000 \
         --tl-min 0.08 --tl-max 0.16 --open-min 2 --open-max 12 \
         --rand-move-prob 0.10
