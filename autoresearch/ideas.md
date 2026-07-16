@@ -86,6 +86,19 @@ don't touch), NEIGHBOR_DIST=2, DELTA_WEIGHT=15, MAX_QDEPTH=16
 
 ## Graveyard
 
+- int16 quantization at C64 (nps_bench 2026-07-16): +3% NPS — the 45 MB
+  float table was already L3-resident on the 5800X3D, and int16 conv
+  doesn't beat float on a 7-tap depthwise kernel. Costs |dv|~100 value
+  noise (quant_debug.py: codebook rounding through the unnormalized
+  star block). Closed without a gate. The +40 Elo prior was priced for
+  memory-bound tables; only resurrect on hardware with smaller cache or
+  if C-width grows past L3 (see mixnet4_c128q).
+- int16 C128 resurrection (mixnet4_c128q 30/100, −13): quant value
+  noise |dv|~120 costs ~7 pts by itself (30 vs float C128's 37) — the
+  unnormalized star head amplifies weight rounding ~200×. Any future
+  quantization needs per-channel codebook scales (~5× less error) or a
+  normalized value input. Quantization fully closed on this box.
+
 - VCF budget under mixnet (mx64_vcfb40k +0, mx64_vcfb15k −1): flat both
   directions, 25k stays.
 - VCF interior probes under mixnet (mx64_vcf15 +0): still nothing.

@@ -38,6 +38,9 @@ from mixnet_train import (CLIP, HEX7, Mixnet, N_RAW, batch_geometry,
                           decode_onehot, extract_mix)
 
 MAGIC = 0x4D584E31
+MAGIC_Q = 0x4D584E32   # int16-quantized variant ('MXN2')
+QS_TAB = 256           # codebook scale: |tab| must be < 32767/256 = 128
+QS_DW = 4096           # dw conv scale:  |dw|  must be < 32767/4096 = 8
 
 
 def bake_codebook(model, device, chunk=16384):
@@ -102,6 +105,8 @@ def main():
                     help="default: <ckpt dir>/mixnet.bin")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available()
                     else "cpu")
+    ap.add_argument("--quant", action="store_true",
+                    help="int16 codebook+dw (MXN2 blob); heads stay float")
     args = ap.parse_args()
 
     ck = torch.load(os.path.join(SCRIPT_DIR, args.ckpt), map_location="cpu",
@@ -139,12 +144,27 @@ def main():
 
     out = args.out or os.path.join(os.path.dirname(
         os.path.join(SCRIPT_DIR, args.ckpt)), "mixnet.bin")
+    dw = model.dw.detach().numpy()
+    if args.quant:
+        # int16 codebook (scale 256) + int16 dw (scale 4096). Row 0 is
+        # exactly zero pre-quant, so the zero anchor survives rounding.
+        assert np.abs(tab).max() * QS_TAB < 32767, np.abs(tab).max()
+        assert np.abs(dw).max() * QS_DW < 32767, np.abs(dw).max()
+        tab_q = np.round(tab * QS_TAB).astype(np.int16)
+        dw_q = np.round(dw * QS_DW).astype(np.int16)
+        print(f"quant: tab err {np.abs(tab - tab_q/QS_TAB).max():.2e}, "
+              f"dw err {np.abs(dw - dw_q/QS_DW).max():.2e}")
     with open(out, "wb") as fh:
-        fh.write(np.array([MAGIC, C, P, V, 0], dtype=np.int32)[:1].tobytes())
+        magic = MAGIC_Q if args.quant else MAGIC
+        fh.write(np.array([magic], dtype=np.int32).tobytes())
         fh.write(np.array([C, P, V, 0], dtype=np.int32).tobytes())
         fh.write(np.array([CLIP], dtype=np.float32).tobytes())
-        fh.write(tab.tobytes())
-        fh.write(model.dw.detach().numpy().astype(np.float32).tobytes())
+        if args.quant:
+            fh.write(tab_q.tobytes())
+            fh.write(dw_q.tobytes())
+        else:
+            fh.write(tab.tobytes())
+            fh.write(dw.astype(np.float32).tobytes())
         for lin in (model.star_a, model.star_b, model.v1, model.v2,
                     model.pg1, model.pg2, model.pout):
             _lin(fh, lin)

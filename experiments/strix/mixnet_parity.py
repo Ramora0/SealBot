@@ -58,6 +58,9 @@ def main():
     ap.add_argument("--blob", required=True)
     ap.add_argument("--bot-dir", default=os.path.join(REPO, "cand_mixnet"))
     ap.add_argument("--positions", type=int, default=12)
+    ap.add_argument("--quant", action="store_true",
+                    help="int16 blob: widened value/policy tolerances, "
+                         "drift must be exactly 0")
     args = ap.parse_args()
 
     ck = torch.load(os.path.join(SCRIPT_DIR, args.ckpt), map_location="cpu",
@@ -117,8 +120,16 @@ def main():
     print(f"parity over {args.positions} positions: "
           f"|dv| {worst_v:.4f} (of ~8000 scale), |dp|/mag {worst_p:.6f}, "
           f"acc_drift {drift:.2e}")
-    ok = worst_v < 1.0 and worst_p < 1e-3 and drift < 1e-3
-    print("PARITY OK" if ok else "PARITY FAIL")
+    if args.quant:
+        # int16 engine vs float oracle: quantization error is expected
+        # (quant_debug.py attribution: codebook rounding alone gives
+        # |dv|~72 through the unnormalized star block; full int ~101),
+        # but int make/undo must be EXACTLY reversible (drift == 0).
+        ok = worst_v < 150.0 and worst_p < 2e-2 and drift == 0.0
+    else:
+        ok = worst_v < 1.0 and worst_p < 1e-3 and drift < 1e-3
+    print(("PARITY OK" if ok else "PARITY FAIL")
+          + (" (quant tolerances)" if args.quant else ""))
     sys.exit(0 if ok else 1)
 
 
