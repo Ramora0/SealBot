@@ -22,3 +22,4 @@ mx64_vcfb40k	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixne
 mx64_vcfb15k	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_BUDGET=15000	e1	41/100	-63 [-132, +6]	-1	-0.14	discard	VCF budget down: flat both directions, 25k stays
 mx64_vcfk11	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_K=11	e1	43/100	-49 [-117, +19]	+1	+0.14	keep	VCF K back to 11 under mixnet eval: +1, ADOPT; new ctrl 43
 mx64_vcf15	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF=15	e1	43/100	-49 [-117, +19]	+0	+0.00	discard	interior probes under mixnet: flat, VCF subsystem closed again
+mixnet4_c128q	cand_mixnet128q	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet128q/mixnet.bin	e1	30/100	-147 [-221, -73]	-13	-1.91	discard	int16 C128: quant value noise (|dv|~120) costs ~7pts vs float C128 - quantization closed on this box
