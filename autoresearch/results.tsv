@@ -16,3 +16,5 @@ policy75	current	SEAL_POLICY_MODE=75	e1	32/100	-131 [-203, -58]	-4	-0.60	discard
 mixnet1m	cand_mixnet	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet/mixnet.bin	e1	38/100	-85 [-155, -15]	+2	+0.29	keep	Rapfi Mixnet repro (mirror net), first gate: parity+ vs tuned champion, knobs untuned
 mixnet2_c64	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin	e1	42/100	-56 [-125, +12]	+4	+0.58	keep	M128/C64 mirror 24ep: capacity was the binding constraint (battery), fixed latent MX_P overflow; new ctrl 42
 mixnet3_c128	cand_mixnet128	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet128/mixnet.bin	e1	37/100	-92 [-163, -22]	-5	-0.72	discard	C128 probe: offline curve bends (+0.0024 corr, top1 worse), 90MB table busts L3 - size closed at C64
+ctrl_held	current	-	e1	17/50	-115 [-215, -15]	-	-	keep	held-out anchor for e1 transfer checks (trunk champion config)
+mixnet2_c64_transfer	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin	e1	19/50	-85 [-183, +13]	+4	+0.42	keep	transfer check PASS: dev +6 reproduces on held +4, not memorizing dev
