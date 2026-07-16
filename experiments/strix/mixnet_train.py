@@ -203,6 +203,65 @@ def build_mix(cache, workers, max_shards=None):
     return ds
 
 
+# ── gen2 self-play value stream (own-search labels + outcomes) ──────────
+# Positions from experiments/nnue/datagen.py shards: root search score
+# (mover POV, mate sentinels clamp to ±8 → near-one-hot WDL) + winner.
+# Value-only: no policy targets, empty cand slice, loss-level mixed with
+# the strix streams (never averaged targets — mixdeep lesson).
+
+def _shard_gen2(pkl_path):
+    CO, XY, tgt, mcs, mls, outc = [], [], [], [], [], []
+    for g in pickle.load(open(pkl_path, "rb")):
+        w = int(g["winner"])
+        for p in g["positions"]:
+            mover = int(p["mover"])
+            oc = 0.0 if w == 0 else (1.0 if w == mover else -1.0)
+            codes, coords, _ = extract_mix(
+                [tuple(c) for c in p["cells"]], mover, [])
+            if not len(codes):
+                continue
+            CO.append(codes); XY.append(coords)
+            tgt.append(min(8.0, max(-8.0, p["score"] / 1000.0)))
+            mcs.append(int(p["move_count"])); mls.append(int(p["moves_left"]))
+            outc.append(oc)
+    if not CO:
+        return None
+    return (np.concatenate(CO), np.concatenate(XY),
+            np.array([len(x) for x in CO], np.int32),
+            np.array(tgt, np.float32), np.array(mcs, np.int32),
+            np.array(mls, np.int32), np.array(outc, np.float32))
+
+
+def build_gen2(cache, pat, workers):
+    if os.path.exists(cache):
+        d = np.load(cache)
+        return {k: d[k] for k in d.files}
+    import multiprocessing as mp
+    files = sorted(glob.glob(os.path.join(pat, "*.pkl")))
+    print(f"building gen2 dataset from {len(files)} shards...", flush=True)
+    t0 = time.time()
+    acc = {k: [] for k in ("codes", "xy", "clen", "tgt", "mc", "ml", "outc")}
+    with mp.Pool(workers) as pool:
+        for i, res in enumerate(pool.imap_unordered(_shard_gen2, files)):
+            if res is None:
+                continue
+            for k, v in zip(acc, res):
+                acc[k].append(v)
+            if (i + 1) % 100 == 0:
+                print(f"  {i+1}/{len(files)} shards, "
+                      f"{sum(len(x) for x in acc['tgt'])} pos, "
+                      f"{time.time()-t0:.0f}s", flush=True)
+    ds = {k: np.concatenate(v) for k, v in acc.items()}
+    o = np.zeros(len(ds["clen"]) + 1, dtype=np.int64)
+    np.cumsum(ds["clen"], out=o[1:])
+    ds["coffs"] = o
+    np.savez(cache, **ds)
+    print(f"gen2 dataset: {len(ds['tgt'])} pos "
+          f"({ds['clen'].mean():.0f} cells), {time.time()-t0:.0f}s",
+          flush=True)
+    return ds
+
+
 # ── batch geometry (dilation + hex neighbors), pure numpy ───────────────
 
 OFF = 512          # coord shift; |relative coords| stay far below this
@@ -519,6 +578,14 @@ def main():
                     help="alternate color-mirrored batches (digit-swapped "
                          "codes, negated value/outcome/tempo, same policy "
                          "targets) so the engine can query root-relative")
+    ap.add_argument("--gen2-glob", default=None,
+                    help="dir glob of gen2 self-play shard dirs, e.g. "
+                         "../nnue/data/gen2_* (value-only stream: own-"
+                         "search root scores 75%% + outcomes 25%%)")
+    ap.add_argument("--gen2-w", type=float, default=1.0,
+                    help="loss weight on the gen2 value stream")
+    ap.add_argument("--gen2-batch", type=int, default=128,
+                    help="gen2 positions per step (on top of --batch)")
     ap.add_argument("--out", default="output_mixnet1")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
@@ -557,6 +624,24 @@ def main():
         print(f"data-frac {args.data_frac}: {len(train_ids)} train pos",
               flush=True)
 
+    g2 = None
+    if args.gen2_glob:
+        g2cache = os.path.splitext(cache)[0] + "_gen2.npz"
+        g2 = build_gen2(g2cache, args.gen2_glob, args.threads)
+        g2codes = torch.from_numpy(g2["codes"].astype(np.int64))
+        g2xy, g2coffs = g2["xy"], g2["coffs"]
+        g2tgt = torch.from_numpy(g2["tgt"])
+        g2outc = torch.from_numpy(g2["outc"])
+        g2g0 = torch.from_numpy((g2["mc"] * 0.02).astype(np.float32))
+        g2g1 = torch.from_numpy((g2["ml"] * 0.5).astype(np.float32))
+        n2 = len(g2["tgt"])
+        g2order = rng.permutation(n2)
+        n2val = min(4000, n2 // 10)
+        g2val = np.sort(g2order[:n2val])
+        g2train, g2ptr = g2order[n2val:], 0
+        print(f"gen2 stream: {n2} pos, w={args.gen2_w}, "
+              f"b2={args.gen2_batch}", flush=True)
+
     model = Mixnet(m=args.M, c=args.C, p=args.P, v=args.V).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr,
                            betas=(0.9, 0.999), eps=1e-8)
@@ -591,6 +676,23 @@ def main():
                 logit[pg].to(dev), by,
                 played[ids].to(dev), boc)
 
+    def batch2(ids, mirror=False):
+        """gen2 value-only batch: geometry + value targets, no policy."""
+        clens = g2coffs[ids + 1] - g2coffs[ids]
+        cg = multi_arange(g2coffs[ids], clens)
+        seg_c = np.repeat(np.arange(len(ids)), clens)
+        src, nbr, useg = batch_geometry(g2xy[cg], seg_c, None)
+        bco = g2codes[torch.from_numpy(cg)].to(dev)
+        bg1, by, boc = g2g1[ids].to(dev), g2tgt[ids].to(dev), g2outc[ids].to(dev)
+        if mirror:
+            bco = mir[bco]
+            bg1, by, boc = -bg1, -by, -boc
+        return (bco,
+                torch.from_numpy(src).to(dev),
+                torch.from_numpy(nbr).to(dev),
+                torch.from_numpy(useg).to(dev), len(ids),
+                g2g0[ids].to(dev), bg1, by, boc)
+
     steps = (len(train_ids) + args.batch - 1) // args.batch
     print(f"training mixnet (M={args.M} C={args.C} P={args.P} V={args.V}) "
           f"on {len(train_ids)} pos, {steps} steps/epoch, dev={dev}",
@@ -598,7 +700,7 @@ def main():
     for ep in range(args.epochs):
         rng.shuffle(train_ids)
         t0 = time.time()
-        tv = tp = nb = 0
+        tv = tp = tv2 = nb = 0
         for s in range(0, len(train_ids), args.batch):
             ids = np.sort(train_ids[s:s + args.batch])
             (bco, src, nbr, useg, npos, cand_u, seg_p, bg0, bg1, btl,
@@ -612,9 +714,25 @@ def main():
             lp, _, _ = policy_ce_mixed(
                 model.policy(fp, A, cnt, cand_u, seg_p, bg0, bg1),
                 btl, seg_p, npos, bpl, args.true_w)
-            (lv + lp).backward()
+            lv2 = torch.zeros((), device=dev)
+            if g2 is not None and len(g2train) > 0:
+                b2 = np.sort(g2train[g2ptr:g2ptr + args.gen2_batch])
+                g2ptr += args.gen2_batch
+                if g2ptr + args.gen2_batch > len(g2train):
+                    rng.shuffle(g2train)
+                    g2ptr = 0
+                if len(b2):
+                    (co2, src2, nbr2, useg2, np2, bg02, bg12, by2,
+                     boc2) = batch2(b2, mirror=args.mirror and nb % 2 == 1)
+                    a2 = model.cell_feats(co2, dev)
+                    _, A2, _ = model.conv_pool(a2, src2, nbr2, useg2, np2,
+                                               (co2 != 0).any(dim=1))
+                    lv2 = value_ce_mixed(model.value(A2, bg02, bg12),
+                                         by2, boc2, args.true_w)
+            (lv + lp + args.gen2_w * lv2).backward()
             opt.step()
             tv += float(lv.detach()); tp += float(lp.detach()); nb += 1
+            tv2 += float(lv2.detach())
         sched.step()
 
         with torch.no_grad():
@@ -637,12 +755,26 @@ def main():
                 rank_sum += int((pl > bl).sum()) + npos
                 nv += npos
             pred = np.concatenate(preds)
+            g2msg = ""
+            if g2 is not None and len(g2val):
+                p2s = []
+                for s in range(0, len(g2val), args.batch):
+                    (co2, src2, nbr2, useg2, np2, bg02, bg12, _,
+                     _) = batch2(g2val[s:s + args.batch])
+                    a2 = model.cell_feats(co2, dev)
+                    _, A2, _ = model.conv_pool(a2, src2, nbr2, useg2, np2,
+                                               (co2 != 0).any(dim=1))
+                    pr2 = F.softmax(model.value(A2, bg02, bg12), dim=1)
+                    p2s.append((pr2[:, 0] - pr2[:, 1]).cpu().numpy())
+                y2 = (g2tgt[g2val] / 8.0).numpy()
+                c2 = float(np.corrcoef(np.concatenate(p2s), y2)[0, 1])
+                g2msg = f" | v2 {tv2/nb:.4f} g2corr {c2:.4f}"
         y = (tgt[val_ids] / 8.0).numpy()
         corr = float(np.corrcoef(pred, y)[0, 1])
         print(f"epoch {ep+1}/{args.epochs}: v {tv/nb:.4f} p {tp/nb:.4f} "
               f"| corr {corr:.4f} sp {spearman(pred, y):.4f} "
-              f"| top1 {top1/nv:.3f} mrank {rank_sum/nv:.2f} "
-              f"({time.time()-t0:.0f}s)", flush=True)
+              f"| top1 {top1/nv:.3f} mrank {rank_sum/nv:.2f}"
+              f"{g2msg} ({time.time()-t0:.0f}s)", flush=True)
 
     torch.save({"state": {k: v.cpu() for k, v in model.state_dict().items()},
                 "M": args.M, "C": args.C, "P": args.P, "V": args.V,
