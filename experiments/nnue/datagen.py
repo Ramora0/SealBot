@@ -48,7 +48,8 @@ def _random_opening(game, rng, n_stones):
     return not game.game_over
 
 
-def _play_one_game(bot, game_mod, rng, tl_min, tl_max, open_min, open_max):
+def _play_one_game(bot, game_mod, rng, tl_min, tl_max, open_min, open_max,
+                   rand_prob):
     """Play one self-play game; return list of position records + winner."""
     HexGame, Player = game_mod.HexGame, game_mod.Player
     game = HexGame(win_length=6)
@@ -61,6 +62,16 @@ def _play_one_game(bot, game_mod, rng, tl_min, tl_max, open_min, open_max):
     total_moves = game.move_count
 
     while not game.game_over and total_moves < MAX_MOVES:
+        if rand_prob > 0 and rng.random() < rand_prob:
+            # Off-path injection: play this turn randomly and record
+            # nothing; every later position still gets a full-budget
+            # label, so the corpus samples states the search tree visits
+            # but game paths never reach (gensfen random_move analog).
+            k = game.moves_left_in_turn
+            if not _random_opening(game, rng, k):
+                break
+            total_moves += k
+            continue
         mover = game.current_player
         bot.time_limit = rng.uniform(tl_min, tl_max)
         moves = bot.get_move(game)
@@ -91,7 +102,7 @@ def _play_one_game(bot, game_mod, rng, tl_min, tl_max, open_min, open_max):
 
 def _worker(args):
     (worker_id, n_games, out_dir, bot_dir, tl_min, tl_max,
-     open_min, open_max, seed, shard_size) = args
+     open_min, open_max, rand_prob, seed, shard_size) = args
 
     sys.path.insert(0, bot_dir)
     sys.path.insert(0, ROOT_DIR)
@@ -117,7 +128,7 @@ def _worker(args):
 
     for gi in range(n_games):
         result = _play_one_game(bot, game_mod, rng, tl_min, tl_max,
-                                open_min, open_max)
+                                open_min, open_max, rand_prob)
         if result is None:
             continue
         records, winner = result
@@ -144,6 +155,9 @@ def main():
     ap.add_argument("--tl-max", type=float, default=0.05)
     ap.add_argument("--open-min", type=int, default=2)
     ap.add_argument("--open-max", type=int, default=10)
+    ap.add_argument("--rand-move-prob", type=float, default=0.0,
+                    help="Per-turn probability of playing a random "
+                         "unrecorded turn (off-path state injection)")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--shard-size", type=int, default=200)
     args = ap.parse_args()
@@ -153,8 +167,8 @@ def main():
 
     per_worker = (args.games + args.workers - 1) // args.workers
     tasks = [(w, per_worker, out_dir, args.bot_dir, args.tl_min, args.tl_max,
-              args.open_min, args.open_max, args.seed + 7919 * w,
-              args.shard_size)
+              args.open_min, args.open_max, args.rand_move_prob,
+              args.seed + 7919 * w, args.shard_size)
              for w in range(args.workers)]
 
     print(f"Generating ~{per_worker * args.workers} games "
