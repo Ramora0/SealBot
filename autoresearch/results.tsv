@@ -15,3 +15,4 @@ vcf11_nointerior	current	SEAL_VCF=11	e1	36/100	-100 [-170, -30]	+1	+0.15	keep	in
 policy75	current	SEAL_POLICY_MODE=75	e1	32/100	-131 [-203, -58]	-4	-0.60	discard	policy fusion at our-interior: ns negative, delta owns the tree
 mixnet1m	cand_mixnet	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet/mixnet.bin	e1	38/100	-85 [-155, -15]	+2	+0.29	keep	Rapfi Mixnet repro (mirror net), first gate: parity+ vs tuned champion, knobs untuned
 mixnet2_c64	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin	e1	42/100	-56 [-125, +12]	+4	+0.58	keep	M128/C64 mirror 24ep: capacity was the binding constraint (battery), fixed latent MX_P overflow; new ctrl 42
+mixnet3_c128	cand_mixnet128	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet128/mixnet.bin	e1	37/100	-92 [-163, -22]	-5	-0.72	discard	C128 probe: offline curve bends (+0.0024 corr, top1 worse), 90MB table busts L3 - size closed at C64

@@ -1,0 +1,23 @@
+{
+ "bot_dir": "C:\\Users\\Lee\\coding\\python\\AI\\SealBot\\cand_mixnet128",
+ "games": 100,
+ "pipeline": 2,
+ "sealbot_tl_per_turn": 0.44,
+ "strix_sims": 64,
+ "strix_sec_per_stone_mean": 0.3795,
+ "strix_sec_per_turn_est": 0.7589,
+ "strix_wins": 63,
+ "strix_losses": 37,
+ "draws": 0,
+ "strix_win_rate": 0.63,
+ "strix_elo_vs_sealbot": 91.5,
+ "ci": [
+  0.5322,
+  0.7182
+ ],
+ "mean_game_length": 64.4,
+ "illegal_substitutions": 1,
+ "sub_examples": [
+  "51: (-7, 6)->(-7, 5)"
+ ]
+}
