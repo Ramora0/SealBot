@@ -19,3 +19,4 @@ mixnet3_c128	cand_mixnet128	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet128/mix
 ctrl_held	current	-	e1	17/50	-115 [-215, -15]	-	-	keep	held-out anchor for e1 transfer checks (trunk champion config)
 mixnet2_c64_transfer	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin	e1	19/50	-85 [-183, +13]	+4	+0.42	keep	transfer check PASS: dev +6 reproduces on held +4, not memorizing dev
 mx64_vcfb40k	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_BUDGET=40000	e1	42/100	-56 [-125, +12]	+0	+0.00	discard	VCF budget up under mixnet eval: flat, insensitive upward
+mx64_vcfb15k	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_BUDGET=15000	e1	41/100	-63 [-132, +6]	-1	-0.14	discard	VCF budget down: flat both directions, 25k stays
