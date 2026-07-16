@@ -4,6 +4,30 @@ Ordered roughly by expected value. One experiment = one idea. Mark
 attempts with the results.tsv name; move dead ideas to the graveyard at
 the bottom with a one-line cause of death.
 
+## State as of 2026-07-16 (post-mixnet campaign)
+
+Champion: **mixnet2_c64** (cand_mixnet64, M128/C64 mirror mixnet,
+SEAL_VCF_K=11) — 43/100 dev, Elo −49 vs strix; transfer-verified on
+held (+4 vs trunk anchor). Scaling laws (experiments/strix/SCALING.md):
+data axis flat at C32, size axis closed at C64 (C128 = L3 bust, −5),
+M128 free. Knobs re-swept under mixnet eval: VCF budget flat both
+directions, K=11 (+1 adopt), interior probes flat. Cheap knob space is
+mined out.
+
+Next big rocks (need user sign-off, structural):
+- [ ] **int16 quantization** of the mixnet path — prior ~+40 Elo via
+  2× NPS, AND halves the C64 table 45→23 MB (back under L3 with room).
+  Needs: quantized bake, int16 _amem/_acc3 accumulate, requant of the
+  star/value path, new parity harness with tolerance spec.
+- [ ] **policy-rank LMR** — mixnet top-1 is 0.645 (engine-truth ~2×
+  better than trunk's); reductions keyed to policy rank are unpriced.
+- [ ] **gen2 retrain** when the cluster corpus lands (own-search labels
+  + outcomes + VCF floors + strix aux, loss-level mixing; per-source
+  loss code in mixnet_train.py still to write).
+- [ ] **d50-at-C64 recheck** — data curve was measured flat at C32
+  only; verify it's still flat at the new capacity before paying for
+  more strix relabeling.
+
 ## Knob inventory (verified against cand/ source, 2026-07-14)
 
 Env (no rebuild): SEAL_VCF_FK/FB (defense-filter probe; auto = max(4,k/2)=5,
@@ -62,4 +86,10 @@ don't touch), NEIGHBOR_DIST=2, DELTA_WEIGHT=15, MAX_QDEPTH=16
 
 ## Graveyard
 
-(nothing yet on this machine)
+- VCF budget under mixnet (mx64_vcfb40k +0, mx64_vcfb15k −1): flat both
+  directions, 25k stays.
+- VCF interior probes under mixnet (mx64_vcf15 +0): still nothing.
+- C128 net (mixnet3_c128 −5): 90 MB table busts the 96 MB L3; offline
+  curve had already bent (+0.0024 corr, top-1 worse). Size closed at C64.
+- Data volume at C32 (battery d25/d50): 4× data = ±0.0004 corr. Strix
+  forward labels mined out at that capacity.
