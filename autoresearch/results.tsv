@@ -20,3 +20,4 @@ ctrl_held	current	-	e1	17/50	-115 [-215, -15]	-	-	keep	held-out anchor for e1 tr
 mixnet2_c64_transfer	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin	e1	19/50	-85 [-183, +13]	+4	+0.42	keep	transfer check PASS: dev +6 reproduces on held +4, not memorizing dev
 mx64_vcfb40k	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_BUDGET=40000	e1	42/100	-56 [-125, +12]	+0	+0.00	discard	VCF budget up under mixnet eval: flat, insensitive upward
 mx64_vcfb15k	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_BUDGET=15000	e1	41/100	-63 [-132, +6]	-1	-0.14	discard	VCF budget down: flat both directions, 25k stays
+mx64_vcfk11	cand_mixnet64	SEAL_EVAL=mixnet SEAL_MIXNET_BLOB=cand_mixnet64/mixnet.bin SEAL_VCF_K=11	e1	43/100	-49 [-117, +19]	+1	+0.14	keep	VCF K back to 11 under mixnet eval: +1, ADOPT; new ctrl 43
